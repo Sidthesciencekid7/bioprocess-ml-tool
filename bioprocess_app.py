@@ -584,18 +584,20 @@ if st.session_state.rf is not None:
         feat_path = tempfile.mktemp(suffix=".png")
         fig2.savefig(feat_path, bbox_inches='tight', dpi=150); plt.close()
 
-    with col_b:
+   with col_b:
         if shap_values is not None:
             st.subheader("🧠 SHAP Summary Plot")
-           shap.summary_plot(shap_values, X_model, plot_type="bar",
-                  feature_names=feature_cols, show=False)
-fig3 = plt.gcf()
-fig3.set_size_inches(7, fig_h)
-plt.title('SHAP Feature Impact')
-plt.tight_layout()
-st.pyplot(fig3, use_container_width=True)
+            fig_h = max(5, len(feature_cols) * 0.45)
+            shap.summary_plot(shap_values, X_model, plot_type="bar",
+                              feature_names=feature_cols, show=False)
+            fig3 = plt.gcf()
+            fig3.set_size_inches(7, fig_h)
+            plt.title('SHAP Feature Impact')
+            plt.tight_layout()
+            st.pyplot(fig3, use_container_width=True)
             shap_path = tempfile.mktemp(suffix=".png")
-            fig3.savefig(shap_path, bbox_inches='tight', dpi=150); plt.close()
+            fig3.savefig(shap_path, bbox_inches='tight', dpi=150)
+            plt.close()
         else:
             st.info("Enable 'Compute SHAP values' in the sidebar to see SHAP plots.")
 
