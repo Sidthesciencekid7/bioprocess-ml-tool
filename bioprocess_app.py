@@ -587,12 +587,13 @@ if st.session_state.rf is not None:
     with col_b:
         if shap_values is not None:
             st.subheader("🧠 SHAP Summary Plot")
-            fig3, ax3 = plt.subplots(figsize=(7, fig_h))
-            shap.summary_plot(shap_values, X_model, plot_type="bar",
-                              feature_names=feature_cols, show=False, ax=ax3)
-            ax3.set_title('SHAP Feature Impact')
-            plt.tight_layout()
-            st.pyplot(fig3, use_container_width=True)
+           shap.summary_plot(shap_values, X_model, plot_type="bar",
+                  feature_names=feature_cols, show=False)
+fig3 = plt.gcf()
+fig3.set_size_inches(7, fig_h)
+plt.title('SHAP Feature Impact')
+plt.tight_layout()
+st.pyplot(fig3, use_container_width=True)
             shap_path = tempfile.mktemp(suffix=".png")
             fig3.savefig(shap_path, bbox_inches='tight', dpi=150); plt.close()
         else:
