@@ -138,7 +138,7 @@ def generate_flags(df, target_col, time_col, nh3_thresh, glc_thresh, vcd_thresh,
     return flags
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def train_models(X_vals, X_cols, y_vals, y_name, groups_list, n_estimators):
     X = pd.DataFrame(X_vals, columns=X_cols)
     y = pd.Series(y_vals, name=y_name)
