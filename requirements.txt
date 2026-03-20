@@ -8,3 +8,4 @@ xgboost>=1.7.0
 shap>=0.42.0
 fpdf2>=2.7.0
 openpyxl>=3.1.0
+requests>=2.28.0
