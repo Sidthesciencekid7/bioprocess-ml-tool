@@ -93,7 +93,9 @@ st.markdown("""
 def clean_text(t):
     return (t.replace("⚠️","[!]").replace("✅","[OK]")
              .replace("⚠","[!]").replace("°","")
-             .replace("×","x").replace("⁶","6").replace("²","2"))
+             .replace("×","x").replace("⁶","6").replace("²","2")
+             .replace("—","-").replace("–","-").replace("\u2019","'")
+             .replace("\u2018","'").replace("\u201c",'"').replace("\u201d",'"'))
 
 def smart_detect(cols):
     target_hints = ['titer','igg','antibody','mab','product','titre','ethanol','biomass','titer']
