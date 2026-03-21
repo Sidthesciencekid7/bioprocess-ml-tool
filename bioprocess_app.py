@@ -75,12 +75,15 @@ def call_ai(prompt):
     try:
         api_key = st.secrets.get("GEMINI_API_KEY", None)
         if not api_key:
+            st.session_state['ai_error'] = "GEMINI_API_KEY not found in Streamlit secrets."
             return None
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
+        st.session_state['ai_error'] = None
         return response.text.strip()
-    except Exception:
+    except Exception as e:
+        st.session_state['ai_error'] = str(e)
         return None
 
 
@@ -264,7 +267,7 @@ def train_models(X_vals, X_cols, y_vals, y_name, groups_list, n_estimators):
 
 def show_insight(text, icon="💡"):
     if text:
-        st.markdown(f'<div class="chart-insight">{icon} {text}</div>', unsafe_allow_html=True)
+        st.info(f"{icon} {text}")
 
 
 def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
@@ -571,8 +574,11 @@ with tab_main:
         st.markdown('<div class="step-card"><strong>📊 Step 4 — Results</strong></div>', unsafe_allow_html=True)
 
         # AI Run Summary — shown first, prominent
+        if st.session_state.get('ai_error'):
+            st.warning(f"AI interpretation unavailable: {st.session_state['ai_error']}")
         if st.session_state.ai_summary:
-            st.markdown(f'<div class="insight-box"><strong>📝 Run Summary</strong><br><br>{st.session_state.ai_summary}</div>', unsafe_allow_html=True)
+            st.subheader("📝 AI Run Summary")
+            st.info(st.session_state.ai_summary)
 
         # Metrics
         c1, c2, c3, c4 = st.columns(4)
@@ -585,12 +591,12 @@ with tab_main:
         st.subheader("🚩 Process Flags")
         for sev, msg in flags:
             if sev == "warn":
-                st.markdown(f'<div class="flag-warn">⚠️ {msg}</div>', unsafe_allow_html=True)
+                st.warning(f"⚠️ {msg}")
             else:
-                st.markdown(f'<div class="flag-ok">✅ {msg}</div>', unsafe_allow_html=True)
+                st.success(f"✅ {msg}")
         if st.session_state.ai_flags:
             with st.expander("💬 What do these flags mean in plain English?", expanded=True):
-                st.markdown(st.session_state.ai_flags)
+                st.write(st.session_state.ai_flags)
 
         titer_path = feat_path = cmp_path = shap_path = corr_path = None
 
@@ -699,7 +705,7 @@ with tab_main:
         # Next run recommendations
         if st.session_state.ai_next_run:
             st.subheader("🎯 Recommendations for Your Next Run")
-            st.markdown(f'<div class="insight-box">{st.session_state.ai_next_run}</div>', unsafe_allow_html=True)
+            st.info(st.session_state.ai_next_run)
 
         # Downloads
         st.markdown('<div class="step-card"><strong>📥 Step 5 — Download Reports</strong></div>', unsafe_allow_html=True)
