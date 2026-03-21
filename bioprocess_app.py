@@ -78,7 +78,7 @@ def call_ai(prompt):
             st.session_state['ai_error'] = "GEMINI_API_KEY not found in Streamlit secrets."
             return None
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
         st.session_state['ai_error'] = None
         return response.text.strip()
