@@ -103,58 +103,45 @@ def run_all_ai_interpretations(df_plot, target_col, time_col, feature_cols,
     rf_r2      = r2_score(y, rf_pred)
     xgb_r2     = r2_score(y, xgb_pred)
 
-    context = f"""
-You are an expert bioprocess scientist interpreting results for a mixed audience including non-specialists.
-Dataset target: {target_col}. Time column: {time_col}. Run duration: {duration} units.
-Final {target_col}: {final_val:.2f}. Peak {target_col}: {peak_val:.2f}.
-RF model R2: {rf_r2:.3f}. XGBoost R2: {xgb_r2:.3f}.
-Top 3 predictive features: {', '.join([f[0] for f in top_feats])}.
-Warnings raised: {'; '.join(warn_flags) if warn_flags else 'None'}.
-Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}.
-Always use plain English. Avoid jargon. If you must use a technical term, briefly explain it in parentheses.
-Keep responses concise — 2-4 sentences unless told otherwise.
-"""
+    prompt = f"""You are an expert bioprocess scientist interpreting ML results for a mixed audience including non-specialists.
 
-    # 1. Overall run summary
-    st.session_state.ai_summary = ai_interpret(context + """
-Write a plain-English run summary (3-4 sentences) for a scientist reviewing this bioprocess run.
-Describe what happened, whether the outcome was good or bad, and the single most important thing to know about this run.
-Do not use bullet points.""")
+Data:
+- Target: {target_col}, Final value: {final_val:.2f}, Peak: {peak_val:.2f}, Duration: {duration} units
+- RF R2: {rf_r2:.3f}, XGBoost R2: {xgb_r2:.3f}
+- Top 3 predictive features: {', '.join([f[0] for f in top_feats])}
+- Warnings: {'; '.join(warn_flags) if warn_flags else 'None'}
+- Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}
 
-    # 2. Flag explanations
-    flag_prompt = context + f"""
-For each of these process warnings, write one plain-English sentence explaining what it means in practice and why it matters:
-{chr(10).join(['- ' + m for s, m in flags])}
-Format as a simple list with one line per flag, starting with the flag text then a colon then the explanation."""
-    st.session_state.ai_flags = ai_interpret(flag_prompt)
+Return ONLY a valid JSON object with exactly these keys (no markdown, no backticks, no extra text):
+{{
+  "summary": "3-4 sentence plain English run summary describing what happened and whether the outcome was good or bad",
+  "flags": "One line per flag explaining what it means in plain English and why it matters",
+  "titer": "2 sentences explaining what the titer curve shape tells us and what the gap between actual and predicted means",
+  "features": "2-3 sentences explaining why the top 3 features matter biologically and what to watch in future runs",
+  "correlation": "2 sentences explaining what the correlation heatmap shows and what action to take",
+  "shap": "2 sentences explaining what SHAP adds beyond feature importance and why it is useful",
+  "next_run": "3 specific numbered actionable recommendations for the next run mentioning specific features or thresholds"
+}}"""
 
-    # 3. Titer curve interpretation
-    st.session_state.ai_titer = ai_interpret(context + """
-In 2 sentences, explain what the titer curve shape tells us about this run.
-What does the gap between actual and predicted values indicate? Keep it simple enough for a non-specialist.""")
+    response = call_ai(prompt)
+    if not response:
+        return
 
-    # 4. Feature importance interpretation
-    st.session_state.ai_feat = ai_interpret(context + f"""
-The top 3 most important features for predicting {target_col} are: {', '.join([f[0] for f in top_feats])}.
-In 2-3 sentences, explain in plain English what this means — why these features matter biologically and what a scientist should watch most closely in future runs.""")
-
-    # 5. Correlation heatmap interpretation
-    st.session_state.ai_corr = ai_interpret(context + """
-In 2 sentences, explain to a non-specialist what the correlation heatmap is showing and what action they should take based on it.
-For example, if two features are highly correlated, what does that mean practically?""")
-
-    # 6. SHAP interpretation
-    if use_shap:
-        st.session_state.ai_shap = ai_interpret(context + f"""
-SHAP values show which features push predictions up or down for individual samples (not just globally).
-In 2 sentences, explain what SHAP adds beyond feature importance and why it is useful for understanding {target_col} prediction in bioprocess runs.""")
-
-    # 7. Next run recommendation
-    st.session_state.ai_next_run = ai_interpret(context + f"""
-Based on this run's results and warnings, write 3 specific, actionable recommendations for the scientist's next run.
-Format as a numbered list. Be concrete — mention specific features, thresholds, or timing if relevant.
-Write for a scientist but keep it accessible.""")
-
+    try:
+        import json
+        # Strip any accidental markdown fences
+        clean = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        data = json.loads(clean)
+        st.session_state.ai_summary  = data.get("summary")
+        st.session_state.ai_flags    = data.get("flags")
+        st.session_state.ai_titer    = data.get("titer")
+        st.session_state.ai_feat     = data.get("features")
+        st.session_state.ai_corr     = data.get("correlation")
+        st.session_state.ai_shap     = data.get("shap")
+        st.session_state.ai_next_run = data.get("next_run")
+    except Exception as e:
+        # If JSON parsing fails, put the raw response in the summary
+        st.session_state.ai_summary = response
 
 # =============================================================================
 # HELPERS
