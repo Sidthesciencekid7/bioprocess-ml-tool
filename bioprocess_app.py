@@ -78,7 +78,7 @@ def call_ai(prompt):
             st.session_state['ai_error'] = "GEMINI_API_KEY not found in Streamlit secrets."
             return None
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         st.session_state['ai_error'] = None
         return response.text.strip()
@@ -103,45 +103,58 @@ def run_all_ai_interpretations(df_plot, target_col, time_col, feature_cols,
     rf_r2      = r2_score(y, rf_pred)
     xgb_r2     = r2_score(y, xgb_pred)
 
-    prompt = f"""You are an expert bioprocess scientist interpreting ML results for a mixed audience including non-specialists.
+    context = f"""
+You are an expert bioprocess scientist interpreting results for a mixed audience including non-specialists.
+Dataset target: {target_col}. Time column: {time_col}. Run duration: {duration} units.
+Final {target_col}: {final_val:.2f}. Peak {target_col}: {peak_val:.2f}.
+RF model R2: {rf_r2:.3f}. XGBoost R2: {xgb_r2:.3f}.
+Top 3 predictive features: {', '.join([f[0] for f in top_feats])}.
+Warnings raised: {'; '.join(warn_flags) if warn_flags else 'None'}.
+Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}.
+Always use plain English. Avoid jargon. If you must use a technical term, briefly explain it in parentheses.
+Keep responses concise — 2-4 sentences unless told otherwise.
+"""
 
-Data:
-- Target: {target_col}, Final value: {final_val:.2f}, Peak: {peak_val:.2f}, Duration: {duration} units
-- RF R2: {rf_r2:.3f}, XGBoost R2: {xgb_r2:.3f}
-- Top 3 predictive features: {', '.join([f[0] for f in top_feats])}
-- Warnings: {'; '.join(warn_flags) if warn_flags else 'None'}
-- Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}
+    # 1. Overall run summary
+    st.session_state.ai_summary = ai_interpret(context + """
+Write a plain-English run summary (3-4 sentences) for a scientist reviewing this bioprocess run.
+Describe what happened, whether the outcome was good or bad, and the single most important thing to know about this run.
+Do not use bullet points.""")
 
-Return ONLY a valid JSON object with exactly these keys (no markdown, no backticks, no extra text):
-{{
-  "summary": "3-4 sentence plain English run summary describing what happened and whether the outcome was good or bad",
-  "flags": "One line per flag explaining what it means in plain English and why it matters",
-  "titer": "2 sentences explaining what the titer curve shape tells us and what the gap between actual and predicted means",
-  "features": "2-3 sentences explaining why the top 3 features matter biologically and what to watch in future runs",
-  "correlation": "2 sentences explaining what the correlation heatmap shows and what action to take",
-  "shap": "2 sentences explaining what SHAP adds beyond feature importance and why it is useful",
-  "next_run": "3 specific numbered actionable recommendations for the next run mentioning specific features or thresholds"
-}}"""
+    # 2. Flag explanations
+    flag_prompt = context + f"""
+For each of these process warnings, write one plain-English sentence explaining what it means in practice and why it matters:
+{chr(10).join(['- ' + m for s, m in flags])}
+Format as a simple list with one line per flag, starting with the flag text then a colon then the explanation."""
+    st.session_state.ai_flags = ai_interpret(flag_prompt)
 
-    response = call_ai(prompt)
-    if not response:
-        return
+    # 3. Titer curve interpretation
+    st.session_state.ai_titer = ai_interpret(context + """
+In 2 sentences, explain what the titer curve shape tells us about this run.
+What does the gap between actual and predicted values indicate? Keep it simple enough for a non-specialist.""")
 
-    try:
-        import json
-        # Strip any accidental markdown fences
-        clean = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        data = json.loads(clean)
-        st.session_state.ai_summary  = data.get("summary")
-        st.session_state.ai_flags    = data.get("flags")
-        st.session_state.ai_titer    = data.get("titer")
-        st.session_state.ai_feat     = data.get("features")
-        st.session_state.ai_corr     = data.get("correlation")
-        st.session_state.ai_shap     = data.get("shap")
-        st.session_state.ai_next_run = data.get("next_run")
-    except Exception as e:
-        # If JSON parsing fails, put the raw response in the summary
-        st.session_state.ai_summary = response
+    # 4. Feature importance interpretation
+    st.session_state.ai_feat = ai_interpret(context + f"""
+The top 3 most important features for predicting {target_col} are: {', '.join([f[0] for f in top_feats])}.
+In 2-3 sentences, explain in plain English what this means — why these features matter biologically and what a scientist should watch most closely in future runs.""")
+
+    # 5. Correlation heatmap interpretation
+    st.session_state.ai_corr = ai_interpret(context + """
+In 2 sentences, explain to a non-specialist what the correlation heatmap is showing and what action they should take based on it.
+For example, if two features are highly correlated, what does that mean practically?""")
+
+    # 6. SHAP interpretation
+    if use_shap:
+        st.session_state.ai_shap = ai_interpret(context + f"""
+SHAP values show which features push predictions up or down for individual samples (not just globally).
+In 2 sentences, explain what SHAP adds beyond feature importance and why it is useful for understanding {target_col} prediction in bioprocess runs.""")
+
+    # 7. Next run recommendation
+    st.session_state.ai_next_run = ai_interpret(context + f"""
+Based on this run's results and warnings, write 3 specific, actionable recommendations for the scientist's next run.
+Format as a numbered list. Be concrete — mention specific features, thresholds, or timing if relevant.
+Write for a scientist but keep it accessible.""")
+
 
 # =============================================================================
 # HELPERS
@@ -787,72 +800,210 @@ In 2 sentences, give a plain-English harvest recommendation. Should they extend 
 
 
 # =============================================================================
-# TAB 3 — FEED OPTIMIZER
+# TAB 3 — FEED OPTIMIZER (constrained, biologically-aware)
 # =============================================================================
 with tab_feedopt:
     st.markdown("## 🧪 Feed Strategy Optimizer")
-    st.markdown("Adjust metabolite levels to simulate what the titer would be under different feed conditions.")
+    st.markdown("""
+Simulate different feed conditions and see the predicted impact on titer.
+Sliders are constrained to **mean ± 2 standard deviations** — the realistic operating range seen in your data.
+A **reliability score** tells you how trustworthy each prediction is based on how close your inputs are to real observed data.
+    """)
 
     if st.session_state.rf is None:
         st.info("Run the Main Analysis first.")
     else:
-        rf           = st.session_state.rf
-        df_plot      = st.session_state.df_plot
-        target_col   = st.session_state.target_col
-        feature_cols = st.session_state.feature_cols
-        time_col     = st.session_state.time_col
+        rf            = st.session_state.rf
+        df_plot       = st.session_state.df_plot
+        target_col    = st.session_state.target_col
+        feature_cols  = st.session_state.feature_cols
+        time_col      = st.session_state.time_col
         numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
 
         if numeric_feats:
+            # Compute stats for constraints and correlation
+            feat_means  = {f: float(df_plot[f].mean()) for f in numeric_feats}
+            feat_stds   = {f: float(df_plot[f].std())  for f in numeric_feats}
+            feat_mins   = {f: float(df_plot[f].min())  for f in numeric_feats}
+            feat_maxs   = {f: float(df_plot[f].max())  for f in numeric_feats}
+            corr_matrix = df_plot[numeric_feats].corr()
+
+            st.markdown("### Adjust Feature Values")
+            st.caption("Sliders are constrained to the realistic operating range (mean +/- 2 std). Correlated features adjust automatically.")
+
+            # Track which feature the user is actively changing
             slider_vals = {}
+            anchor_feat = st.selectbox(
+                "Primary feature to adjust (others will auto-correct for biological consistency)",
+                numeric_feats, key="anchor_feat"
+            )
+
+            # Constrained slider bounds: mean ± 2*std, clamped to observed min/max
+            def constrained_bounds(feat):
+                lo = max(feat_mins[feat], feat_means[feat] - 2 * feat_stds[feat])
+                hi = min(feat_maxs[feat], feat_means[feat] + 2 * feat_stds[feat])
+                if lo >= hi:
+                    lo = feat_mins[feat]
+                    hi = feat_maxs[feat]
+                return lo, hi
+
+            # First pass — get the anchor feature value
+            lo, hi = constrained_bounds(anchor_feat)
+            step = (hi - lo) / 100 if (hi - lo) > 0 else 0.01
+            anchor_val = st.slider(
+                f"{anchor_feat} (primary)",
+                float(lo), float(hi), float(feat_means[anchor_feat]),
+                float(step), key=f"wi_anchor"
+            )
+            anchor_delta_std = (anchor_val - feat_means[anchor_feat]) / (feat_stds[anchor_feat] + 1e-9)
+
+            # Auto-adjust correlated features
+            auto_adjusted = {}
+            for feat in numeric_feats:
+                if feat == anchor_feat:
+                    slider_vals[feat] = anchor_val
+                    continue
+                corr = corr_matrix.loc[anchor_feat, feat]
+                # Shift correlated features proportionally
+                suggested = feat_means[feat] + corr * anchor_delta_std * feat_stds[feat]
+                lo2, hi2  = constrained_bounds(feat)
+                suggested = float(np.clip(suggested, lo2, hi2))
+                if abs(corr) > 0.4:
+                    auto_adjusted[feat] = corr
+                slider_vals[feat] = suggested
+
+            # Show all sliders — auto-adjusted ones are pre-set but still editable
+            st.markdown("#### All Features (auto-adjusted based on correlations, override if needed)")
             cols = st.columns(min(3, len(numeric_feats)))
             for i, feat in enumerate(numeric_feats):
-                mn  = float(df_plot[feat].min())
-                mx  = float(df_plot[feat].max())
-                avg = float(df_plot[feat].mean())
-                rng = mx - mn
-                step = rng / 100 if rng > 0 else 0.01
+                if feat == anchor_feat:
+                    continue
+                lo2, hi2 = constrained_bounds(feat)
+                step2 = (hi2 - lo2) / 100 if (hi2 - lo2) > 0 else 0.01
+                corr = corr_matrix.loc[anchor_feat, feat]
+                label = feat
+                if abs(corr) > 0.4:
+                    direction = "up" if corr > 0 else "down"
+                    label = f"{feat} (auto: r={corr:.2f}, shifted {direction})"
                 with cols[i % len(cols)]:
-                    slider_vals[feat] = st.slider(feat, mn, mx, avg, step, key=f"wi_{feat}")
+                    slider_vals[feat] = st.slider(
+                        label,
+                        float(lo2), float(hi2),
+                        float(np.clip(slider_vals[feat], lo2, hi2)),
+                        float(step2),
+                        key=f"wi_{feat}"
+                    )
 
+            # Build input row and predict
             input_row     = pd.DataFrame([[slider_vals[f] for f in numeric_feats]], columns=numeric_feats)
             valid_cols    = [c for c in feature_cols if c in input_row.columns]
             whatif_pred   = rf.predict(input_row[valid_cols])[0]
-            baseline_row  = pd.DataFrame([[float(df_plot[f].mean()) for f in numeric_feats]], columns=numeric_feats)
+            baseline_row  = pd.DataFrame([[feat_means[f] for f in numeric_feats]], columns=numeric_feats)
             baseline_pred = rf.predict(baseline_row[valid_cols])[0]
             delta         = whatif_pred - baseline_pred
 
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Predicted Titer (your settings)", f"{whatif_pred:.2f}")
-            c2.metric("Baseline Titer (mean conditions)", f"{baseline_pred:.2f}")
-            c3.metric("Delta vs Baseline", f"{delta:+.2f}", delta_color="normal")
+            # Reliability score — how close is this input to the nearest training point?
+            X_train    = df_plot[numeric_feats].dropna()
+            X_norm     = (X_train - X_train.mean()) / (X_train.std() + 1e-9)
+            input_norm = (input_row[numeric_feats] - X_train.mean()) / (X_train.std() + 1e-9)
+            distances  = np.sqrt(((X_norm.values - input_norm.values) ** 2).sum(axis=1))
+            min_dist   = distances.min()
+            # Convert distance to a 0-100 reliability score (lower distance = higher reliability)
+            p25 = np.percentile(distances, 25)
+            p75 = np.percentile(distances, 75)
+            reliability = max(0, min(100, 100 * (1 - (min_dist - p25) / (p75 - p25 + 1e-9))))
 
-            # Sensitivity
-            st.subheader("Feature Sensitivity")
+            st.markdown("---")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Predicted Titer",        f"{whatif_pred:.2f}")
+            c2.metric("Baseline (mean conditions)", f"{baseline_pred:.2f}")
+            c3.metric("Delta vs Baseline",       f"{delta:+.2f}")
+            c4.metric("Prediction Reliability",  f"{reliability:.0f}%",
+                      help="How similar your input is to real observed data. Below 50% means extrapolation — treat with caution.")
+
+            # Reliability warning
+            if reliability < 50:
+                st.error(f"⚠️ Low reliability ({reliability:.0f}%) — your input combination is far from any observed data point. This prediction is extrapolating outside the training range and is likely inaccurate. Try keeping sliders closer to the mean values.")
+            elif reliability < 75:
+                st.warning(f"⚠️ Moderate reliability ({reliability:.0f}%) — this combination is somewhat outside typical observed ranges. Treat the prediction with some caution.")
+            else:
+                st.success(f"✅ High reliability ({reliability:.0f}%) — your input is within the observed data range. This prediction is trustworthy.")
+
+            # Show which features were auto-adjusted
+            if auto_adjusted:
+                with st.expander("ℹ️ Why did some sliders move automatically?"):
+                    st.write("These features are correlated with your primary feature and were adjusted to maintain biological consistency:")
+                    for feat, corr in sorted(auto_adjusted.items(), key=lambda x: abs(x[1]), reverse=True):
+                        direction = "increases" if corr > 0 else "decreases"
+                        st.write(f"- **{feat}**: correlation = {corr:.2f} — tends to {direction} when {anchor_feat} changes")
+
+            # Sensitivity chart — only within constrained range
+            st.subheader("Feature Sensitivity (within realistic operating range)")
+            st.caption("Shows how much titer changes as each feature is swept across its realistic range, with all other features at mean.")
             sensitivity = {}
             for feat in numeric_feats:
-                sweep = np.linspace(float(df_plot[feat].min()), float(df_plot[feat].max()), 20)
+                lo2, hi2 = constrained_bounds(feat)
+                sweep = np.linspace(lo2, hi2, 20)
                 preds = []
                 for val in sweep:
-                    row = input_row.copy(); row[feat] = val
+                    row = baseline_row.copy()
+                    row[feat] = val
                     preds.append(rf.predict(row[valid_cols])[0])
                 sensitivity[feat] = max(preds) - min(preds)
 
-            sens_df = pd.DataFrame(list(sensitivity.items()), columns=['Feature','Sensitivity']).sort_values('Sensitivity')
-            fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats)*0.4)))
-            ax_wi.barh(sens_df['Feature'], sens_df['Sensitivity'], color='teal', height=0.6)
-            ax_wi.set_xlabel(f'Predicted {target_col} range'); ax_wi.set_title('Feature Sensitivity')
+            sens_df = pd.DataFrame(list(sensitivity.items()), columns=["Feature","Sensitivity"]).sort_values("Sensitivity")
+            fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats) * 0.4)))
+            colors_s = ["#ef4444" if sensitivity[f] == max(sensitivity.values()) else "#0d9488" for f in sens_df["Feature"]]
+            bars = ax_wi.barh(sens_df["Feature"], sens_df["Sensitivity"], color=colors_s, height=0.6)
+            for bar, val in zip(bars, sens_df["Sensitivity"]):
+                ax_wi.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                           f"{val:.2f}", va="center", fontsize=8)
+            ax_wi.set_xlabel(f"Predicted {target_col} range (constrained sweep)")
+            ax_wi.set_title("Feature Sensitivity — realistic operating range only")
+            ax_wi.tick_params(axis="y", labelsize=9)
             plt.tight_layout()
             st.pyplot(fig_wi, use_container_width=True)
             plt.close()
 
-            top_sensitive = sens_df.sort_values('Sensitivity', ascending=False).head(3)
-            feed_insight = ai_interpret(f"""You are a bioprocess scientist. 
-The what-if titer prediction is {whatif_pred:.2f} vs baseline {baseline_pred:.2f} (delta: {delta:+.2f}).
-Top 3 most sensitive features: {', '.join(top_sensitive['Feature'].tolist())}.
-Current slider values: {', '.join([f'{k}: {v:.2f}' for k, v in slider_vals.items()])}.
-In 2-3 sentences, give a plain-English feed strategy recommendation. Focus on which metabolites to adjust and why.""")
+            # Titer vs primary feature curve
+            st.subheader(f"Titer Response Curve — {anchor_feat}")
+            lo_a, hi_a = constrained_bounds(anchor_feat)
+            sweep_anchor = np.linspace(lo_a, hi_a, 50)
+            preds_curve  = []
+            for val in sweep_anchor:
+                row = baseline_row.copy()
+                row[anchor_feat] = val
+                # Also shift correlated features
+                for feat2 in numeric_feats:
+                    if feat2 == anchor_feat:
+                        continue
+                    corr2 = corr_matrix.loc[anchor_feat, feat2]
+                    delta_std2 = (val - feat_means[anchor_feat]) / (feat_stds[anchor_feat] + 1e-9)
+                    suggested2 = feat_means[feat2] + corr2 * delta_std2 * feat_stds[feat2]
+                    lo3, hi3 = constrained_bounds(feat2)
+                    row[feat2] = float(np.clip(suggested2, lo3, hi3))
+                preds_curve.append(rf.predict(row[valid_cols])[0])
+
+            fig_curve, ax_curve = plt.subplots(figsize=(10, 3))
+            ax_curve.plot(sweep_anchor, preds_curve, color="steelblue", lw=2)
+            ax_curve.axvline(anchor_val, color="coral", ls="--", lw=1.5, label=f"Current: {anchor_val:.2f}")
+            ax_curve.axvline(feat_means[anchor_feat], color="gray", ls=":", lw=1, label=f"Mean: {feat_means[anchor_feat]:.2f}")
+            ax_curve.fill_between(sweep_anchor, preds_curve, alpha=0.1, color="steelblue")
+            ax_curve.set_xlabel(anchor_feat); ax_curve.set_ylabel(f"Predicted {target_col}")
+            ax_curve.set_title(f"How {target_col} responds to {anchor_feat} (with correlated features auto-adjusted)")
+            ax_curve.legend(fontsize=9); ax_curve.grid(True, alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig_curve, use_container_width=True)
+            plt.close()
+
+            top_sensitive = sens_df.sort_values("Sensitivity", ascending=False).head(3)
+            feed_insight = ai_interpret(f"""You are a bioprocess scientist.
+What-if titer: {whatif_pred:.2f} vs baseline {baseline_pred:.2f} (delta: {delta:+.2f}).
+Prediction reliability score: {reliability:.0f}%.
+Primary feature adjusted: {anchor_feat} set to {anchor_val:.2f} (mean: {feat_means[anchor_feat]:.2f}).
+Top 3 most sensitive features within realistic range: {", ".join(top_sensitive["Feature"].tolist())}.
+In 2-3 sentences, give a plain-English feed strategy recommendation.
+If reliability is below 75%, mention that the prediction should be treated cautiously.""")
             show_insight(feed_insight, "🧪")
 
 
