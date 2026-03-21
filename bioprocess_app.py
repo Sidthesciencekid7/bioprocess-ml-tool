@@ -15,10 +15,12 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import io
 import tempfile
 import os
-import json
-import requests
+import google.generativeai as genai
 from datetime import datetime
 
+# =============================================================================
+# PAGE CONFIG
+# =============================================================================
 st.set_page_config(page_title="Bioprocess ML Reporter", page_icon="🧬", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -28,43 +30,132 @@ st.markdown("""
     .main-header p  { margin: 0.3rem 0 0; opacity: 0.8; font-size: 0.95rem; }
     .step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #0d6e8a; padding: 1rem 1.2rem; border-radius: 8px; margin-bottom: 1rem; }
     .flag-warn { background: #fff7ed; border-left: 4px solid #f97316; padding: 0.5rem 1rem; border-radius: 6px; margin: 0.3rem 0; }
-    .flag-ok   { background: #f0fdf4; border-left: 4px solid #22c55e;  padding: 0.5rem 1rem; border-radius: 6px; margin: 0.3rem 0; }
-    .insight-box { background: #f0f9ff; border: 1px solid #bae6fd; border-left: 4px solid #0284c7; padding: 1rem 1.2rem; border-radius: 8px; margin: 1rem 0; }
+    .flag-ok   { background: #f0fdf4; border-left: 4px solid #22c55e; padding: 0.5rem 1rem; border-radius: 6px; margin: 0.3rem 0; }
+    .insight-box { background: #f0f9ff; border: 1px solid #bae6fd; border-left: 4px solid #0284c7; padding: 1rem 1.2rem; border-radius: 8px; margin: 0.8rem 0; line-height: 1.6; }
+    .chart-insight { background: #fafafa; border: 1px solid #e5e7eb; padding: 0.7rem 1rem; border-radius: 6px; margin-top: 0.5rem; font-size: 0.9rem; color: #374151; }
     .warning-box { background: #fef3c7; border: 1px solid #fcd34d; padding: 0.8rem 1rem; border-radius: 8px; margin: 0.5rem 0; font-size: 0.9rem; }
+    .ai-badge { display: inline-block; background: #4f46e5; color: white; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle; }
 </style>
 """, unsafe_allow_html=True)
 
+# =============================================================================
+# SESSION STATE
+# =============================================================================
 for key in ['df','feature_cols','target_col','time_col','group_col','rf','xgb',
             'y','rf_pred','xgb_pred','flags','df_plot','shap_values','X_model',
-            'nl_report','whatif_pred','harvest_model','harvest_pred']:
+            'ai_summary','ai_flags','ai_titer','ai_feat','ai_corr','ai_shap',
+            'ai_harvest','ai_feed','ai_cellline','ai_next_run']:
     if key not in st.session_state:
         st.session_state[key] = None
 
+# =============================================================================
+# SIDEBAR
+# =============================================================================
 with st.sidebar:
-    st.markdown("## Settings")
+    st.markdown("## ⚙️ Settings")
     st.markdown("---")
-    st.markdown("### Process Flag Thresholds")
+    st.markdown("### 🚩 Process Flag Thresholds")
     nh3_thresh = st.slider("NH3 max (mM)",            1.0, 20.0, 5.0,  0.5)
     glc_thresh = st.slider("Glucose min (mM)",         0.1,  5.0, 2.0,  0.1)
     vcd_thresh = st.slider("Min peak VCD (x10^6/mL)", 1.0, 50.0, 10.0, 1.0)
     lg_thresh  = st.slider("Lactate/Glucose ratio",    0.5,  5.0, 2.0,  0.1)
     st.markdown("---")
-    st.markdown("### Model Settings")
+    st.markdown("### 🤖 Model Settings")
     n_estimators = st.slider("Number of trees", 50, 500, 150, 50)
     use_shap     = st.checkbox("Compute SHAP values", value=True)
     st.markdown("---")
-    st.markdown("### Claude AI Narrative")
-    anthropic_key = st.text_input("Anthropic API Key (optional)", type="password",
-                                   help="Enter your key from console.anthropic.com to enable AI-generated run summaries")
     st.caption("Bioprocess ML Reporter v3.0")
 
-st.markdown('<div class="main-header"><h1>🧬 Bioprocess ML Report Generator</h1><p>Harvest prediction, feed optimization, early warning, cell line comparison, and AI-generated run narratives.</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🧬 Bioprocess ML Report Generator</h1><p>Upload your bioprocess data and get instant ML predictions, process flags, and AI-powered plain-English interpretation.</p></div>', unsafe_allow_html=True)
+
+# =============================================================================
+# AI HELPER — Gemini, fully internal, no user input needed
+# =============================================================================
+def call_ai(prompt):
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY", None)
+        if not api_key:
+            return None
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception:
+        return None
+
+
+def ai_interpret(prompt, fallback=None):
+    result = call_ai(prompt)
+    return result if result else fallback
+
+
+def run_all_ai_interpretations(df_plot, target_col, time_col, feature_cols,
+                                rf, y, rf_pred, xgb_pred, flags, group_col):
+    warn_flags = [m for s, m in flags if s == "warn"]
+    ok_flags   = [m for s, m in flags if s == "ok"]
+    top_feats  = sorted(zip(feature_cols, rf.feature_importances_), key=lambda x: x[1], reverse=True)[:3]
+    final_val  = float(df_plot[target_col].iloc[-1])
+    peak_val   = float(df_plot[target_col].max())
+    duration   = int(df_plot[time_col].max()) if time_col in df_plot.columns else "unknown"
+    rf_r2      = r2_score(y, rf_pred)
+    xgb_r2     = r2_score(y, xgb_pred)
+
+    context = f"""
+You are an expert bioprocess scientist interpreting results for a mixed audience including non-specialists.
+Dataset target: {target_col}. Time column: {time_col}. Run duration: {duration} units.
+Final {target_col}: {final_val:.2f}. Peak {target_col}: {peak_val:.2f}.
+RF model R2: {rf_r2:.3f}. XGBoost R2: {xgb_r2:.3f}.
+Top 3 predictive features: {', '.join([f[0] for f in top_feats])}.
+Warnings raised: {'; '.join(warn_flags) if warn_flags else 'None'}.
+Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}.
+Always use plain English. Avoid jargon. If you must use a technical term, briefly explain it in parentheses.
+Keep responses concise — 2-4 sentences unless told otherwise.
+"""
+
+    # 1. Overall run summary
+    st.session_state.ai_summary = ai_interpret(context + """
+Write a plain-English run summary (3-4 sentences) for a scientist reviewing this bioprocess run.
+Describe what happened, whether the outcome was good or bad, and the single most important thing to know about this run.
+Do not use bullet points.""")
+
+    # 2. Flag explanations
+    flag_prompt = context + f"""
+For each of these process warnings, write one plain-English sentence explaining what it means in practice and why it matters:
+{chr(10).join(['- ' + m for s, m in flags])}
+Format as a simple list with one line per flag, starting with the flag text then a colon then the explanation."""
+    st.session_state.ai_flags = ai_interpret(flag_prompt)
+
+    # 3. Titer curve interpretation
+    st.session_state.ai_titer = ai_interpret(context + """
+In 2 sentences, explain what the titer curve shape tells us about this run.
+What does the gap between actual and predicted values indicate? Keep it simple enough for a non-specialist.""")
+
+    # 4. Feature importance interpretation
+    st.session_state.ai_feat = ai_interpret(context + f"""
+The top 3 most important features for predicting {target_col} are: {', '.join([f[0] for f in top_feats])}.
+In 2-3 sentences, explain in plain English what this means — why these features matter biologically and what a scientist should watch most closely in future runs.""")
+
+    # 5. Correlation heatmap interpretation
+    st.session_state.ai_corr = ai_interpret(context + """
+In 2 sentences, explain to a non-specialist what the correlation heatmap is showing and what action they should take based on it.
+For example, if two features are highly correlated, what does that mean practically?""")
+
+    # 6. SHAP interpretation
+    if use_shap:
+        st.session_state.ai_shap = ai_interpret(context + f"""
+SHAP values show which features push predictions up or down for individual samples (not just globally).
+In 2 sentences, explain what SHAP adds beyond feature importance and why it is useful for understanding {target_col} prediction in bioprocess runs.""")
+
+    # 7. Next run recommendation
+    st.session_state.ai_next_run = ai_interpret(context + f"""
+Based on this run's results and warnings, write 3 specific, actionable recommendations for the scientist's next run.
+Format as a numbered list. Be concrete — mention specific features, thresholds, or timing if relevant.
+Write for a scientist but keep it accessible.""")
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
-
 def clean_text(t):
     return (t.replace("⚠️","[!]").replace("✅","[OK]").replace("⚠","[!]")
              .replace("°","").replace("×","x").replace("⁶","6").replace("²","2")
@@ -171,26 +262,15 @@ def train_models(X_vals, X_cols, y_vals, y_name, groups_list, n_estimators):
     return rf, xgb, rf_pred, xgb_pred
 
 
-def call_claude(api_key, prompt):
-    headers = {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"}
-    body = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 1000,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        r = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=30)
-        if r.status_code == 200:
-            return r.json()["content"][0]["text"]
-        else:
-            return f"API error {r.status_code}: {r.text}"
-    except Exception as e:
-        return f"Request failed: {e}"
+def show_insight(text, icon="💡"):
+    if text:
+        st.markdown(f'<div class="chart-insight">{icon} {text}</div>', unsafe_allow_html=True)
 
 
 def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
              titer_path, feat_path, cmp_path, shap_path, corr_path,
-             harvest_path, whatif_path, cellline_path, nl_report, timestamp):
+             harvest_path, whatif_path, cellline_path,
+             ai_summary, ai_flags, ai_next_run, timestamp):
     pdf = FPDF()
     pdf.set_margins(15, 15, 15)
     pdf.add_page()
@@ -212,13 +292,13 @@ def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
     pdf.cell(W, 8, f"Generated: {timestamp}", ln=True, align="C")
     pdf.ln(4)
 
-    if nl_report:
-        heading("Executive Summary (AI Generated)")
+    if ai_summary:
+        heading("Executive Summary")
         pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(W, 6, clean_text(nl_report))
-        pdf.ln(4)
+        pdf.multi_cell(W, 6, clean_text(ai_summary))
+        pdf.ln(3)
 
-    heading("1. Run Summary")
+    heading("1. Run Metrics")
     rows = {
         "Target Variable":    target_col,
         "Time Column":        time_col,
@@ -238,47 +318,57 @@ def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
     for sev, msg in flags:
         prefix = "[!] " if sev == "warn" else "[OK] "
         pdf.multi_cell(W, 8, clean_text(prefix + msg))
+    if ai_flags:
+        pdf.ln(2)
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.multi_cell(W, 6, clean_text(ai_flags))
     pdf.ln(4)
 
-    heading("3. Target Variable Curve")
+    if ai_next_run:
+        heading("3. Recommendations for Next Run")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(W, 6, clean_text(ai_next_run))
+        pdf.ln(4)
+
+    heading("4. Target Variable Curve")
     if titer_path and os.path.exists(titer_path):
         pdf.image(titer_path, w=W)
     pdf.ln(4)
 
     pdf.add_page()
-    heading("4. Model Comparison")
+    heading("5. Model Comparison")
     if cmp_path and os.path.exists(cmp_path):
         pdf.image(cmp_path, w=W)
     pdf.ln(4)
 
-    heading("5. Feature Importance")
+    heading("6. Feature Importance")
     if feat_path and os.path.exists(feat_path):
         pdf.image(feat_path, w=W)
     pdf.ln(4)
 
     if shap_path and os.path.exists(shap_path):
         pdf.add_page()
-        heading("6. SHAP Summary")
+        heading("7. SHAP Summary")
         pdf.image(shap_path, w=W)
-        pdf.ln(4)
 
     if corr_path and os.path.exists(corr_path):
-        heading("7. Correlation Heatmap")
+        pdf.add_page()
+        heading("8. Correlation Heatmap")
         pdf.image(corr_path, w=W)
 
     if harvest_path and os.path.exists(harvest_path):
         pdf.add_page()
-        heading("8. Harvest Timing Analysis")
+        heading("9. Harvest Timing")
         pdf.image(harvest_path, w=W)
 
     if whatif_path and os.path.exists(whatif_path):
         pdf.add_page()
-        heading("9. Feed Strategy What-If")
+        heading("10. Feed Strategy Sensitivity")
         pdf.image(whatif_path, w=W)
 
     if cellline_path and os.path.exists(cellline_path):
         pdf.add_page()
-        heading("10. Cell Line Comparison")
+        heading("11. Cell Line Comparison")
         pdf.image(cellline_path, w=W)
 
     return bytes(pdf.output())
@@ -346,9 +436,8 @@ def make_excel(df, target_col, time_col, rf, xgb, feature_cols, y, rf_pred, xgb_
 
 
 # =============================================================================
-# MAIN APP
+# TABS
 # =============================================================================
-
 tab_main, tab_harvest, tab_feedopt, tab_earlywarning, tab_cellline = st.tabs([
     "📊 Main Analysis",
     "🌾 Harvest Timing",
@@ -361,8 +450,9 @@ tab_main, tab_harvest, tab_feedopt, tab_earlywarning, tab_cellline = st.tabs([
 # TAB 1 — MAIN ANALYSIS
 # =============================================================================
 with tab_main:
+
     st.markdown('<div class="step-card"><strong>📁 Step 1 — Upload Your Data</strong></div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"], key="main_upload")
+    uploaded = st.file_uploader("Upload CSV or Excel file", type=["csv","xlsx"], key="main_upload")
 
     if uploaded:
         try:
@@ -412,7 +502,7 @@ with tab_main:
         st.session_state.group_col    = group_col
 
     if st.session_state.feature_cols:
-        st.markdown('<div class="step-card"><strong>🤖 Step 3 — Train Models</strong></div>', unsafe_allow_html=True)
+        st.markdown('<div class="step-card"><strong>🤖 Step 3 — Train Models & Generate Insights</strong></div>', unsafe_allow_html=True)
 
         if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
             df           = st.session_state.df
@@ -446,15 +536,22 @@ with tab_main:
                     shap_values = shap.TreeExplainer(rf).shap_values(X)
                 st.session_state.shap_values = shap_values
 
-            st.session_state.rf       = rf
-            st.session_state.xgb      = xgb
-            st.session_state.y        = y
-            st.session_state.rf_pred  = rf_pred
-            st.session_state.xgb_pred = xgb_pred
-            st.session_state.X_model  = X
-            st.session_state.df_plot  = df_plot
-            st.session_state.flags    = generate_flags(df_plot, target_col, time_col, nh3_thresh, glc_thresh, vcd_thresh, lg_thresh)
-            st.success("Analysis complete!")
+            flags = generate_flags(df_plot, target_col, time_col, nh3_thresh, glc_thresh, vcd_thresh, lg_thresh)
+
+            st.session_state.rf          = rf
+            st.session_state.xgb         = xgb
+            st.session_state.y           = y
+            st.session_state.rf_pred     = rf_pred
+            st.session_state.xgb_pred    = xgb_pred
+            st.session_state.X_model     = X
+            st.session_state.df_plot     = df_plot
+            st.session_state.flags       = flags
+
+            with st.spinner("Generating AI interpretations..."):
+                run_all_ai_interpretations(df_plot, target_col, time_col, feature_cols,
+                                           rf, y, rf_pred, xgb_pred, flags, group_col)
+
+            st.success("Analysis and AI interpretations complete!")
 
     if st.session_state.rf is not None:
         rf           = st.session_state.rf
@@ -473,49 +570,29 @@ with tab_main:
 
         st.markdown('<div class="step-card"><strong>📊 Step 4 — Results</strong></div>', unsafe_allow_html=True)
 
+        # AI Run Summary — shown first, prominent
+        if st.session_state.ai_summary:
+            st.markdown(f'<div class="insight-box"><strong>📝 Run Summary</strong><br><br>{st.session_state.ai_summary}</div>', unsafe_allow_html=True)
+
+        # Metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("RF R2 (CV)",  f"{r2_score(y, rf_pred):.4f}")
         c2.metric("XGB R2 (CV)", f"{r2_score(y, xgb_pred):.4f}")
         c3.metric("RF MAE",      f"{mean_absolute_error(y, rf_pred):.4f}")
         c4.metric("XGB MAE",     f"{mean_absolute_error(y, xgb_pred):.4f}")
 
+        # Process flags with AI explanations
         st.subheader("🚩 Process Flags")
         for sev, msg in flags:
             if sev == "warn":
                 st.markdown(f'<div class="flag-warn">⚠️ {msg}</div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="flag-ok">✅ {msg}</div>', unsafe_allow_html=True)
-
-        # AI Narrative
-        st.subheader("🤖 AI Run Narrative")
-        if anthropic_key:
-            if st.button("Generate AI Summary", key="gen_narrative"):
-                warn_flags = [m for s, m in flags if s == "warn"]
-                ok_flags   = [m for s, m in flags if s == "ok"]
-                top_feats  = sorted(zip(feature_cols, rf.feature_importances_), key=lambda x: x[1], reverse=True)[:3]
-                prompt = f"""You are an expert bioprocess scientist. Write a concise, professional plain-English run summary (3-5 sentences) for a scientist to include in their lab report.
-
-Data:
-- Target variable: {target_col}
-- Final value: {float(df_plot[target_col].iloc[-1]):.2f}
-- Peak value: {float(df_plot[target_col].max()):.2f}
-- Run duration: {int(df_plot[time_col].max())} {time_col} units
-- RF model R2: {r2_score(y, rf_pred):.3f}
-- Top 3 predictive features: {', '.join([f[0] for f in top_feats])}
-- Warnings: {'; '.join(warn_flags) if warn_flags else 'None'}
-- Positive indicators: {'; '.join(ok_flags) if ok_flags else 'None'}
-
-Write the summary as if you are the scientist describing the run outcome and any key observations. Do not use bullet points."""
-                with st.spinner("Generating narrative..."):
-                    narrative = call_claude(anthropic_key, prompt)
-                st.session_state.nl_report = narrative
-            if st.session_state.nl_report:
-                st.markdown(f'<div class="insight-box">{st.session_state.nl_report}</div>', unsafe_allow_html=True)
-        else:
-            st.info("Add your Anthropic API key in the sidebar to generate an AI run narrative.")
+        if st.session_state.ai_flags:
+            with st.expander("💬 What do these flags mean in plain English?", expanded=True):
+                st.markdown(st.session_state.ai_flags)
 
         titer_path = feat_path = cmp_path = shap_path = corr_path = None
-        harvest_path = whatif_path = cellline_path = None
 
         # Titer curve
         st.subheader(f"📈 {target_col} Over Time")
@@ -554,11 +631,11 @@ Write the summary as if you are the scientist describing the run outcome and any
             ax1.legend(fontsize=9)
         ax1.set_xlabel(time_col); ax1.set_ylabel(target_col)
         ax1.set_title(f"{target_col} - Actual vs Predicted", fontsize=13)
-        ax1.grid(True, alpha=0.3)
-        plt.tight_layout()
+        ax1.grid(True, alpha=0.3); plt.tight_layout()
         st.pyplot(fig1, use_container_width=True)
         titer_path = tempfile.mktemp(suffix=".png")
         fig1.savefig(titer_path, bbox_inches='tight', dpi=150); plt.close()
+        show_insight(st.session_state.ai_titer, "📈")
 
         col_a, col_b = st.columns(2)
         fig_h = max(5, len(feature_cols) * 0.45)
@@ -571,11 +648,11 @@ Write the summary as if you are the scientist describing the run outcome and any
             for bar, val in zip(bars, imp_df['Importance']):
                 ax2.text(bar.get_width()+0.001, bar.get_y()+bar.get_height()/2, f'{val:.3f}', va='center', fontsize=8)
             ax2.set_xlabel('Importance Score'); ax2.set_title('RF Feature Importance')
-            ax2.tick_params(axis='y', labelsize=9)
-            plt.tight_layout()
+            ax2.tick_params(axis='y', labelsize=9); plt.tight_layout()
             st.pyplot(fig2, use_container_width=True)
             feat_path = tempfile.mktemp(suffix=".png")
             fig2.savefig(feat_path, bbox_inches='tight', dpi=150); plt.close()
+            show_insight(st.session_state.ai_feat, "🔍")
 
         with col_b:
             if shap_values is not None:
@@ -586,12 +663,13 @@ Write the summary as if you are the scientist describing the run outcome and any
                 st.pyplot(fig3, use_container_width=True)
                 shap_path = tempfile.mktemp(suffix=".png")
                 fig3.savefig(shap_path, bbox_inches='tight', dpi=150); plt.close()
+                show_insight(st.session_state.ai_shap, "🧠")
             else:
                 st.info("Enable SHAP in the sidebar.")
 
         st.subheader("🆚 Model Comparison")
         fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(12, 4))
-        for ax, pred, name, color in [(ax4a, rf_pred,"Random Forest","coral"),(ax4b, xgb_pred,"XGBoost","seagreen")]:
+        for ax, pred, name, color in [(ax4a,rf_pred,"Random Forest","coral"),(ax4b,xgb_pred,"XGBoost","seagreen")]:
             ax.scatter(y, pred, alpha=0.7, color=color, edgecolors='white', linewidths=0.5, s=50)
             mn, mx = float(y.min()), float(y.max())
             ax.plot([mn,mx],[mn,mx],'k--',lw=1.5,label='Perfect fit')
@@ -612,11 +690,16 @@ Write the summary as if you are the scientist describing the run outcome and any
         mask_tri = np.triu(np.ones_like(corr_df, dtype=bool))
         sns.heatmap(corr_df, mask=mask_tri, annot=True, fmt=".2f", cmap="RdYlBu_r", center=0,
                     ax=ax5, linewidths=0.5, annot_kws={"size":8}, cbar_kws={"shrink":0.8})
-        ax5.set_title("Feature Correlation Matrix", fontsize=13)
-        plt.tight_layout()
+        ax5.set_title("Feature Correlation Matrix", fontsize=13); plt.tight_layout()
         st.pyplot(fig5, use_container_width=True)
         corr_path = tempfile.mktemp(suffix=".png")
         fig5.savefig(corr_path, bbox_inches='tight', dpi=150); plt.close()
+        show_insight(st.session_state.ai_corr, "🔗")
+
+        # Next run recommendations
+        if st.session_state.ai_next_run:
+            st.subheader("🎯 Recommendations for Your Next Run")
+            st.markdown(f'<div class="insight-box">{st.session_state.ai_next_run}</div>', unsafe_allow_html=True)
 
         # Downloads
         st.markdown('<div class="step-card"><strong>📥 Step 5 — Download Reports</strong></div>', unsafe_allow_html=True)
@@ -625,10 +708,13 @@ Write the summary as if you are the scientist describing the run outcome and any
         d1, d2 = st.columns(2)
         with d1:
             try:
-                pdf_bytes = make_pdf(df_plot, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
-                                     titer_path, feat_path, cmp_path, shap_path, corr_path,
-                                     harvest_path, whatif_path, cellline_path,
-                                     st.session_state.nl_report, ts_label)
+                pdf_bytes = make_pdf(
+                    df_plot, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
+                    titer_path, feat_path, cmp_path, shap_path, corr_path,
+                    None, None, None,
+                    st.session_state.ai_summary, st.session_state.ai_flags,
+                    st.session_state.ai_next_run, ts_label
+                )
                 st.download_button("📄 Download PDF Report", data=pdf_bytes,
                                    file_name=f"bioprocess_report_{timestamp}.pdf",
                                    mime="application/pdf", use_container_width=True)
@@ -653,129 +739,95 @@ Write the summary as if you are the scientist describing the run outcome and any
 # =============================================================================
 with tab_harvest:
     st.markdown("## 🌾 Harvest Timing Predictor")
-    st.markdown("Predicts the **optimal harvest day** — the timepoint where the model forecasts maximum titer — based on your historical run data.")
+    st.markdown("Predicts the optimal harvest day based on your historical run data.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first to enable harvest prediction.")
+        st.info("Run the Main Analysis first.")
     else:
         rf           = st.session_state.rf
         df_plot      = st.session_state.df_plot
         target_col   = st.session_state.target_col
         time_col     = st.session_state.time_col
         feature_cols = st.session_state.feature_cols
-        group_col    = st.session_state.group_col
-
-        st.markdown("### Predict Optimal Harvest Day")
-        st.markdown("The model simulates extending the run forward in time to find where the predicted titer peaks.")
-
-        numeric_feats = df_plot[feature_cols].select_dtypes(include=np.number).columns.tolist()
+        numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
 
         if numeric_feats:
-            # Use the last observed row as the baseline and extrapolate time
-            last_row = df_plot[numeric_feats].iloc[-1].copy()
-            max_day  = float(df_plot[time_col].max())
+            last_row   = df_plot[numeric_feats].iloc[-1].copy()
+            max_day    = float(df_plot[time_col].max())
             extra_days = st.slider("Simulate days beyond current run end", 1, 30, 10)
-
-            # Build simulated future timepoints by holding metabolites constant
-            time_vals = np.arange(max_day + 1, max_day + extra_days + 1)
-            sim_rows  = pd.DataFrame([last_row.values] * len(time_vals), columns=numeric_feats)
-
-            # Only predict using features the model was trained on
+            time_vals  = np.arange(max_day + 1, max_day + extra_days + 1)
+            sim_rows   = pd.DataFrame([last_row.values] * len(time_vals), columns=numeric_feats)
             valid_sim_cols = [c for c in feature_cols if c in sim_rows.columns]
             if time_col in feature_cols and time_col in sim_rows.columns:
                 sim_rows[time_col] = time_vals
+            sim_preds  = rf.predict(sim_rows[valid_sim_cols])
 
-            sim_preds = rf.predict(sim_rows[valid_sim_cols])
-
-            # Combine historical + simulated
             hist_times = df_plot[time_col].values
             hist_preds = st.session_state.rf_pred
-            hist_actual = st.session_state.y.values
-
-            all_times = np.concatenate([hist_times, time_vals])
-            all_preds = np.concatenate([hist_preds, sim_preds])
-
-            best_idx  = np.argmax(all_preds)
-            best_day  = all_times[best_idx]
-            best_pred = all_preds[best_idx]
+            all_times  = np.concatenate([hist_times, time_vals])
+            all_preds  = np.concatenate([hist_preds, sim_preds])
+            best_idx   = np.argmax(all_preds)
+            best_day   = all_times[best_idx]
+            best_pred  = all_preds[best_idx]
 
             col1, col2, col3 = st.columns(3)
             col1.metric("Predicted Optimal Harvest Day", f"{best_day:.0f}")
             col2.metric("Predicted Peak Titer",          f"{best_pred:.2f}")
             col3.metric("Current Run End Day",            f"{max_day:.0f}")
 
-            if best_day > max_day:
-                st.markdown(f'<div class="insight-box">The model suggests the run has not yet peaked — consider extending to day <strong>{best_day:.0f}</strong> for a predicted titer of <strong>{best_pred:.2f}</strong>.</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="insight-box">The model suggests the run already peaked at day <strong>{best_day:.0f}</strong>. Harvesting earlier may have given better results.</div>', unsafe_allow_html=True)
-
             fig_h, ax_h = plt.subplots(figsize=(12, 4))
-            ax_h.plot(hist_times, hist_actual, 'o-', color='steelblue', label='Actual (historical)', zorder=3)
-            ax_h.plot(hist_times, hist_preds,  's--', color='coral',     label='RF Predicted (historical)', alpha=0.7)
-            ax_h.plot(time_vals,  sim_preds,   '^:',  color='seagreen',  label='Simulated future', alpha=0.8)
+            ax_h.plot(hist_times, st.session_state.y.values,'o-', color='steelblue', label='Actual (historical)', zorder=3)
+            ax_h.plot(hist_times, hist_preds,'s--', color='coral', label='RF Predicted (historical)', alpha=0.7)
+            ax_h.plot(time_vals, sim_preds, '^:', color='seagreen', label='Simulated future', alpha=0.8)
             ax_h.axvline(best_day, color='gold', lw=2, ls='--', label=f'Optimal harvest: Day {best_day:.0f}')
             ax_h.axvline(max_day,  color='gray', lw=1, ls=':', alpha=0.6, label='Current run end')
             ax_h.set_xlabel(time_col); ax_h.set_ylabel(target_col)
             ax_h.set_title("Harvest Timing Prediction"); ax_h.legend(fontsize=8); ax_h.grid(True, alpha=0.3)
             plt.tight_layout()
             st.pyplot(fig_h, use_container_width=True)
-            harvest_path = tempfile.mktemp(suffix=".png")
-            fig_h.savefig(harvest_path, bbox_inches='tight', dpi=150); plt.close()
+            plt.close()
 
-            if anthropic_key:
-                if st.button("Generate Harvest Recommendation", key="harvest_ai"):
-                    prompt = f"""You are a bioprocess scientist. Based on model predictions, the optimal harvest day for this fed-batch run is day {best_day:.0f} with a predicted titer of {best_pred:.2f}. The run currently ends at day {max_day:.0f}.
-
-Write a 2-3 sentence practical recommendation for the scientist about harvest timing, considering process economics and product quality risk. Be direct and specific."""
-                    with st.spinner("Generating recommendation..."):
-                        rec = call_claude(anthropic_key, prompt)
-                    st.markdown(f'<div class="insight-box">{rec}</div>', unsafe_allow_html=True)
-        else:
-            st.warning("No numeric feature columns available for harvest simulation.")
+            # Auto AI interpretation
+            harvest_insight = ai_interpret(f"""You are a bioprocess scientist. The model predicts optimal harvest at day {best_day:.0f} with predicted titer {best_pred:.2f}. The run currently ends at day {max_day:.0f}.
+In 2 sentences, give a plain-English harvest recommendation. Should they extend the run? What is the risk of waiting?""")
+            show_insight(harvest_insight, "🌾")
 
 
 # =============================================================================
-# TAB 3 — FEED OPTIMIZER (WHAT-IF)
+# TAB 3 — FEED OPTIMIZER
 # =============================================================================
 with tab_feedopt:
     st.markdown("## 🧪 Feed Strategy Optimizer")
-    st.markdown("Adjust metabolite levels using the sliders below to simulate **what the titer would be** under different feed conditions.")
+    st.markdown("Adjust metabolite levels to simulate what the titer would be under different feed conditions.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first to enable the feed optimizer.")
+        st.info("Run the Main Analysis first.")
     else:
         rf           = st.session_state.rf
         df_plot      = st.session_state.df_plot
         target_col   = st.session_state.target_col
         feature_cols = st.session_state.feature_cols
         time_col     = st.session_state.time_col
-
-        st.markdown("### Adjust Feature Values")
-        st.caption("Sliders are initialised to the mean value from your data. Adjust them to simulate a different feed strategy.")
-
         numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
 
         if numeric_feats:
             slider_vals = {}
             cols = st.columns(min(3, len(numeric_feats)))
             for i, feat in enumerate(numeric_feats):
-                col_idx = i % len(cols)
                 mn  = float(df_plot[feat].min())
                 mx  = float(df_plot[feat].max())
                 avg = float(df_plot[feat].mean())
                 rng = mx - mn
                 step = rng / 100 if rng > 0 else 0.01
-                with cols[col_idx]:
+                with cols[i % len(cols)]:
                     slider_vals[feat] = st.slider(feat, mn, mx, avg, step, key=f"wi_{feat}")
 
-            input_row = pd.DataFrame([[slider_vals[f] for f in numeric_feats]], columns=numeric_feats)
-            valid_cols = [c for c in feature_cols if c in input_row.columns]
-            whatif_pred = rf.predict(input_row[valid_cols])[0]
-
-            # Baseline = mean of all samples
-            baseline_row = pd.DataFrame([[float(df_plot[f].mean()) for f in numeric_feats]], columns=numeric_feats)
+            input_row     = pd.DataFrame([[slider_vals[f] for f in numeric_feats]], columns=numeric_feats)
+            valid_cols    = [c for c in feature_cols if c in input_row.columns]
+            whatif_pred   = rf.predict(input_row[valid_cols])[0]
+            baseline_row  = pd.DataFrame([[float(df_plot[f].mean()) for f in numeric_feats]], columns=numeric_feats)
             baseline_pred = rf.predict(baseline_row[valid_cols])[0]
-            delta = whatif_pred - baseline_pred
+            delta         = whatif_pred - baseline_pred
 
             st.markdown("---")
             c1, c2, c3 = st.columns(3)
@@ -783,50 +835,32 @@ with tab_feedopt:
             c2.metric("Baseline Titer (mean conditions)", f"{baseline_pred:.2f}")
             c3.metric("Delta vs Baseline", f"{delta:+.2f}", delta_color="normal")
 
-            if delta > 0:
-                st.markdown(f'<div class="flag-ok">Your settings predict a <strong>+{delta:.2f}</strong> improvement over baseline conditions.</div>', unsafe_allow_html=True)
-            elif delta < 0:
-                st.markdown(f'<div class="flag-warn">Your settings predict a <strong>{delta:.2f}</strong> decrease vs baseline — try adjusting the top features.</div>', unsafe_allow_html=True)
-
-            # Sensitivity plot — vary each feature one at a time
+            # Sensitivity
             st.subheader("Feature Sensitivity")
-            st.caption("How much titer changes as each feature is swept from min to max, holding others at your slider values.")
-
             sensitivity = {}
             for feat in numeric_feats:
                 sweep = np.linspace(float(df_plot[feat].min()), float(df_plot[feat].max()), 20)
                 preds = []
                 for val in sweep:
-                    row = input_row.copy()
-                    row[feat] = val
+                    row = input_row.copy(); row[feat] = val
                     preds.append(rf.predict(row[valid_cols])[0])
                 sensitivity[feat] = max(preds) - min(preds)
 
             sens_df = pd.DataFrame(list(sensitivity.items()), columns=['Feature','Sensitivity']).sort_values('Sensitivity')
             fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats)*0.4)))
             ax_wi.barh(sens_df['Feature'], sens_df['Sensitivity'], color='teal', height=0.6)
-            ax_wi.set_xlabel(f'Predicted {target_col} range (min to max sweep)')
-            ax_wi.set_title('Feature Sensitivity (impact on predicted titer)')
+            ax_wi.set_xlabel(f'Predicted {target_col} range'); ax_wi.set_title('Feature Sensitivity')
             plt.tight_layout()
             st.pyplot(fig_wi, use_container_width=True)
-            whatif_path = tempfile.mktemp(suffix=".png")
-            fig_wi.savefig(whatif_path, bbox_inches='tight', dpi=150); plt.close()
+            plt.close()
 
-            if anthropic_key:
-                if st.button("Generate Feed Recommendation", key="feed_ai"):
-                    top_sensitive = sens_df.sort_values('Sensitivity', ascending=False).head(3)
-                    prompt = f"""You are a bioprocess scientist optimizing a fed-batch cell culture.
-
-Current what-if prediction: {whatif_pred:.2f} vs baseline {baseline_pred:.2f} (delta: {delta:+.2f}).
-Top 3 most sensitive features (features where changing the level most impacts titer): {', '.join(top_sensitive['Feature'].tolist())}.
+            top_sensitive = sens_df.sort_values('Sensitivity', ascending=False).head(3)
+            feed_insight = ai_interpret(f"""You are a bioprocess scientist. 
+The what-if titer prediction is {whatif_pred:.2f} vs baseline {baseline_pred:.2f} (delta: {delta:+.2f}).
+Top 3 most sensitive features: {', '.join(top_sensitive['Feature'].tolist())}.
 Current slider values: {', '.join([f'{k}: {v:.2f}' for k, v in slider_vals.items()])}.
-
-Write a 2-3 sentence practical feed strategy recommendation based on this sensitivity analysis. Be specific about which metabolites to focus on and why."""
-                    with st.spinner("Generating recommendation..."):
-                        rec = call_claude(anthropic_key, prompt)
-                    st.markdown(f'<div class="insight-box">{rec}</div>', unsafe_allow_html=True)
-        else:
-            st.warning("No numeric features available.")
+In 2-3 sentences, give a plain-English feed strategy recommendation. Focus on which metabolites to adjust and why.""")
+            show_insight(feed_insight, "🧪")
 
 
 # =============================================================================
@@ -834,19 +868,19 @@ Write a 2-3 sentence practical feed strategy recommendation based on this sensit
 # =============================================================================
 with tab_earlywarning:
     st.markdown("## ⚡ Early Warning System")
-    st.markdown("Upload **early timepoint data** (e.g. just the first few days of a new run) and the model trained on your historical data will forecast the final titer.")
+    st.markdown("Upload early timepoint data from a new run to forecast its final titer against your historical average.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first to train the model on your historical data.")
+        st.info("Run the Main Analysis first.")
     else:
         rf           = st.session_state.rf
         target_col   = st.session_state.target_col
         time_col     = st.session_state.time_col
         feature_cols = st.session_state.feature_cols
         df_plot      = st.session_state.df_plot
+        group_col    = st.session_state.group_col
 
-        st.markdown("### Upload New Run (Early Timepoints)")
-        new_upload = st.file_uploader("Upload early timepoint data (CSV or Excel)", type=["csv","xlsx"], key="ew_upload")
+        new_upload = st.file_uploader("Upload early timepoint data", type=["csv","xlsx"], key="ew_upload")
 
         if new_upload:
             try:
@@ -861,19 +895,12 @@ with tab_earlywarning:
                 st.success(f"Loaded {len(df_new)} early timepoint rows")
                 st.dataframe(df_new.head(), use_container_width=True)
 
-                valid_feats = [c for c in feature_cols if c in df_new.columns]
-                if len(valid_feats) < len(feature_cols):
-                    missing = [c for c in feature_cols if c not in df_new.columns]
-                    st.warning(f"Missing columns (will use mean from training data): {', '.join(missing)}")
-
-                # Fill missing features with training means
                 X_new = pd.DataFrame()
                 for feat in feature_cols:
                     if feat in df_new.columns:
                         X_new[feat] = pd.to_numeric(df_new[feat], errors='coerce')
                     else:
                         X_new[feat] = float(df_plot[feat].mean()) if feat in df_plot.columns else 0.0
-
                 X_new = X_new.fillna(X_new.mean())
                 preds_new = rf.predict(X_new)
 
@@ -881,36 +908,28 @@ with tab_earlywarning:
                 peak_forecast  = preds_new.max()
                 day_col_vals   = df_new[time_col].values if time_col in df_new.columns else np.arange(len(preds_new))
 
-                col1, col2 = st.columns(2)
-                col1.metric("Forecasted Final Titer",  f"{final_forecast:.2f}")
-                col2.metric("Forecasted Peak Titer",   f"{peak_forecast:.2f}")
-
-                # Compare to historical distribution
                 hist_finals = []
-                if st.session_state.group_col and st.session_state.group_col in df_plot.columns:
-                    for grp in df_plot[st.session_state.group_col].unique():
-                        grp_df = df_plot[df_plot[st.session_state.group_col] == grp]
-                        hist_finals.append(float(grp_df[target_col].iloc[-1]))
+                if group_col and group_col in df_plot.columns:
+                    for grp in df_plot[group_col].unique():
+                        gdf = df_plot[df_plot[group_col]==grp]
+                        hist_finals.append(float(gdf[target_col].iloc[-1]))
                 else:
                     hist_finals = [float(df_plot[target_col].iloc[-1])]
 
                 hist_mean = np.mean(hist_finals)
                 hist_std  = np.std(hist_finals) if len(hist_finals) > 1 else 0
+                z = (final_forecast - hist_mean) / hist_std if hist_std > 0 else 0
 
-                if hist_std > 0:
-                    z = (final_forecast - hist_mean) / hist_std
-                    if z < -1.5:
-                        st.markdown(f'<div class="flag-warn">This run is tracking <strong>below average</strong> (z={z:.2f}). Historical mean final titer: {hist_mean:.2f}. Consider intervening.</div>', unsafe_allow_html=True)
-                    elif z > 1.5:
-                        st.markdown(f'<div class="flag-ok">This run is tracking <strong>above average</strong> (z={z:.2f}). Historical mean: {hist_mean:.2f}. Looking strong!</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<div class="insight-box">This run is tracking <strong>within normal range</strong> (z={z:.2f}). Historical mean: {hist_mean:.2f}.</div>', unsafe_allow_html=True)
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Forecasted Final Titer", f"{final_forecast:.2f}")
+                col2.metric("Historical Mean",         f"{hist_mean:.2f}")
+                col3.metric("Z-score vs Historical",   f"{z:.2f}")
 
                 fig_ew, ax_ew = plt.subplots(figsize=(10, 4))
-                ax_ew.plot(day_col_vals, preds_new, 'o-', color='steelblue', label='Forecast from early data', zorder=3)
-                ax_ew.axhline(hist_mean, color='gray',   ls='--', lw=1.5, label=f'Historical mean ({hist_mean:.2f})')
+                ax_ew.plot(day_col_vals, preds_new, 'o-', color='steelblue', label='Forecast')
+                ax_ew.axhline(hist_mean, color='gray', ls='--', lw=1.5, label=f'Historical mean ({hist_mean:.2f})')
                 if hist_std > 0:
-                    ax_ew.axhspan(hist_mean - hist_std, hist_mean + hist_std, alpha=0.15, color='gray', label='Historical ±1 std')
+                    ax_ew.axhspan(hist_mean-hist_std, hist_mean+hist_std, alpha=0.15, color='gray', label='Historical +/-1 std')
                 ax_ew.set_xlabel(time_col); ax_ew.set_ylabel(f'Predicted {target_col}')
                 ax_ew.set_title('Early Warning: Forecasted Titer Trajectory')
                 ax_ew.legend(fontsize=9); ax_ew.grid(True, alpha=0.3)
@@ -918,30 +937,17 @@ with tab_earlywarning:
                 st.pyplot(fig_ew, use_container_width=True)
                 plt.close()
 
-                if anthropic_key:
-                    if st.button("Generate Early Warning Assessment", key="ew_ai"):
-                        prompt = f"""You are a bioprocess scientist reviewing an early warning alert for a new fed-batch run.
-
-Early timepoint data covers {len(df_new)} samples.
-Forecasted final titer from early data: {final_forecast:.2f}
-Historical mean final titer: {hist_mean:.2f}
-Historical std: {hist_std:.2f}
-Z-score: {z:.2f} (how many standard deviations from historical mean)
-
-Write a 2-3 sentence early intervention recommendation. Should the scientist intervene? If so, what should they check or adjust?"""
-                        with st.spinner("Generating assessment..."):
-                            ew_rec = call_claude(anthropic_key, prompt)
-                        st.markdown(f'<div class="insight-box">{ew_rec}</div>', unsafe_allow_html=True)
+                ew_insight = ai_interpret(f"""You are a bioprocess scientist reviewing an early run forecast.
+Early data covers {len(df_new)} samples. Forecasted final titer: {final_forecast:.2f}.
+Historical mean: {hist_mean:.2f}, std: {hist_std:.2f}, z-score: {z:.2f}.
+In 2-3 sentences, give a plain-English early warning assessment. Should the scientist intervene? What specifically should they check?""")
+                show_insight(ew_insight, "⚡")
 
             except Exception as e:
                 st.error(f"Error: {e}")
         else:
             st.markdown("""
-            **How to use this:**
-            1. Run the Main Analysis on your historical completed runs first
-            2. Upload just the first few days of a **new** run here
-            3. The model forecasts what the final titer will be based on the early trajectory
-            4. If the forecast is below your historical average, intervene early
+**How to use:** Run the Main Analysis on completed historical runs first, then upload just the first few days of a new run here. The model will forecast whether the run is on track.
             """)
 
 
@@ -950,7 +956,7 @@ Write a 2-3 sentence early intervention recommendation. Should the scientist int
 # =============================================================================
 with tab_cellline:
     st.markdown("## 🔬 Cell Line Comparison")
-    st.markdown("Automatically benchmarks all cell lines or batches in your dataset against each other.")
+    st.markdown("Benchmarks all runs or cell lines in your dataset against each other.")
 
     if st.session_state.rf is None:
         st.info("Run the Main Analysis first.")
@@ -959,93 +965,72 @@ with tab_cellline:
         target_col   = st.session_state.target_col
         time_col     = st.session_state.time_col
         group_col    = st.session_state.group_col
-        rf           = st.session_state.rf
         rf_pred      = st.session_state.rf_pred
         feature_cols = st.session_state.feature_cols
 
         if group_col and group_col in df_plot.columns:
             groups = df_plot[group_col].astype(str).unique()
-
             summary_rows = []
             for grp in groups:
-                gdf  = df_plot[df_plot[group_col].astype(str) == grp]
-                gmask = df_plot[group_col].astype(str) == grp
+                gdf   = df_plot[df_plot[group_col].astype(str)==grp]
+                gmask = df_plot[group_col].astype(str)==grp
                 gpred = rf_pred[gmask.values]
                 gact  = st.session_state.y[gmask]
                 row = {
-                    "Run / Cell Line":   grp,
-                    "Samples":           len(gdf),
-                    "Duration":          int(gdf[time_col].max()) if time_col in gdf.columns else "N/A",
-                    "Final Titer":       round(float(gdf[target_col].iloc[-1]), 2),
-                    "Peak Titer":        round(float(gdf[target_col].max()), 2),
-                    "Mean Titer":        round(float(gdf[target_col].mean()), 2),
+                    "Run / Cell Line": grp,
+                    "Samples":         len(gdf),
+                    "Duration":        int(gdf[time_col].max()) if time_col in gdf.columns else "N/A",
+                    "Final Titer":     round(float(gdf[target_col].iloc[-1]), 2),
+                    "Peak Titer":      round(float(gdf[target_col].max()), 2),
+                    "Mean Titer":      round(float(gdf[target_col].mean()), 2),
                 }
                 if len(gact) > 1:
                     row["R2"] = round(r2_score(gact, gpred), 3)
-                    row["MAE"] = round(mean_absolute_error(gact, gpred), 3)
                 summary_rows.append(row)
 
             summary_df = pd.DataFrame(summary_rows).sort_values("Peak Titer", ascending=False)
             st.dataframe(summary_df, use_container_width=True)
 
-            # Bar chart comparison
             fig_cl, axes = plt.subplots(1, 3, figsize=(14, 5))
             colors = plt.cm.tab10.colors
-
-            for ax, metric in zip(axes, ["Final Titer", "Peak Titer", "Mean Titer"]):
+            for ax, metric in zip(axes, ["Final Titer","Peak Titer","Mean Titer"]):
                 vals = summary_df[metric].values
                 labs = summary_df["Run / Cell Line"].values
-                bars = ax.bar(labs, vals, color=[colors[i % 10] for i in range(len(labs))])
+                bars = ax.bar(labs, vals, color=[colors[i%10] for i in range(len(labs))])
                 for bar, val in zip(bars, vals):
-                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(vals)*0.01,
+                    ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+max(vals)*0.01,
                             f'{val:.1f}', ha='center', fontsize=8)
                 ax.set_title(metric); ax.set_ylabel(target_col)
-                ax.tick_params(axis='x', rotation=45)
-                ax.grid(True, alpha=0.2, axis='y')
-
+                ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.2, axis='y')
             plt.suptitle("Cell Line / Run Comparison", fontsize=14, y=1.02)
             plt.tight_layout()
             st.pyplot(fig_cl, use_container_width=True)
-            cellline_path = tempfile.mktemp(suffix=".png")
-            fig_cl.savefig(cellline_path, bbox_inches='tight', dpi=150); plt.close()
+            plt.close()
 
-            # Metabolic fingerprint radar
+            # Metabolic fingerprint
             st.subheader("Metabolic Fingerprint")
-            st.caption("Normalised mean metabolite levels per run — useful for spotting systematic differences between batches.")
-
             numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
             if len(numeric_feats) >= 3:
                 means_df = df_plot.groupby(group_col)[numeric_feats].mean()
                 norm_df  = (means_df - means_df.min()) / (means_df.max() - means_df.min() + 1e-9)
-
                 fig_fp, ax_fp = plt.subplots(figsize=(12, 5))
                 sns.heatmap(norm_df.T, annot=True, fmt=".2f", cmap="YlOrRd",
-                            ax=ax_fp, linewidths=0.5, annot_kws={"size": 8},
-                            cbar_kws={"label": "Normalised mean (0-1)"})
+                            ax=ax_fp, linewidths=0.5, annot_kws={"size":8},
+                            cbar_kws={"label":"Normalised mean (0-1)"})
                 ax_fp.set_title("Metabolic Fingerprint by Run (normalised)")
-                ax_fp.set_xlabel("Run / Cell Line")
                 plt.tight_layout()
                 st.pyplot(fig_fp, use_container_width=True)
                 plt.close()
 
-            if anthropic_key:
-                if st.button("Generate Cell Line Comparison Summary", key="cl_ai"):
-                    best_run  = summary_df.iloc[0]["Run / Cell Line"]
-                    worst_run = summary_df.iloc[-1]["Run / Cell Line"]
-                    best_titer  = summary_df.iloc[0]["Peak Titer"]
-                    worst_titer = summary_df.iloc[-1]["Peak Titer"]
-                    prompt = f"""You are a bioprocess scientist reviewing a multi-run cell line comparison.
-
-Number of runs/cell lines compared: {len(groups)}
-Best performing run: {best_run} with peak titer {best_titer:.2f}
-Worst performing run: {worst_run} with peak titer {worst_titer:.2f}
-All runs summary: {summary_df[['Run / Cell Line','Final Titer','Peak Titer']].to_string(index=False)}
-
-Write a 3-4 sentence comparison summary highlighting key differences and recommending which cell line or conditions to prioritise going forward."""
-                    with st.spinner("Generating summary..."):
-                        cl_rec = call_claude(anthropic_key, prompt)
-                    st.markdown(f'<div class="insight-box">{cl_rec}</div>', unsafe_allow_html=True)
+            best_run    = summary_df.iloc[0]["Run / Cell Line"]
+            worst_run   = summary_df.iloc[-1]["Run / Cell Line"]
+            best_titer  = summary_df.iloc[0]["Peak Titer"]
+            worst_titer = summary_df.iloc[-1]["Peak Titer"]
+            cl_insight = ai_interpret(f"""You are a bioprocess scientist comparing {len(groups)} runs.
+Best run: {best_run} with peak titer {best_titer:.2f}. Worst run: {worst_run} with peak titer {worst_titer:.2f}.
+All runs: {summary_df[['Run / Cell Line','Final Titer','Peak Titer']].to_string(index=False)}.
+In 3 sentences, give a plain-English comparison. Which cell line or run should be prioritised and why?""")
+            show_insight(cl_insight, "🔬")
 
         else:
-            st.markdown('<div class="warning-box">No group/run ID column was selected in the Main Analysis. Go back to Step 2 and set the <strong>Experiment/Run ID</strong> column to enable multi-run comparison.</div>', unsafe_allow_html=True)
-            st.markdown("If your data contains only a single run, this tab will not produce meaningful comparisons.")
+            st.markdown('<div class="warning-box">No group/run ID column was selected in the Main Analysis. Go back to Step 2 and set the Experiment/Run ID column to enable multi-run comparison.</div>', unsafe_allow_html=True)
