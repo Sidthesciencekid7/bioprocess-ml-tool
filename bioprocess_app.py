@@ -1025,7 +1025,8 @@ with tab_scaleup:
     st.markdown("""
 Estimate how your titer will change when moving from your current lab scale to a larger bioreactor.
 Enter your current and target scale parameters and the model applies established bioprocess engineering
-relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
+relationships (kLa, tip speed, P/V, mixing time) plus optional proxies for pH loop lag, dissolved CO₂/pCO₂,
+foam/antifoam, and temperature gradients (approximate, not first-principles) to predict the scaled outcome.
     """)
 
     if st.session_state.rf is None:
@@ -1049,7 +1050,6 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
             kla_small = st.number_input("kLa at current scale (1/h)", 1.0, 200.0, 15.0, 0.5, key="kla_small",
                                         help="Typical: ambr15 = 8-15/h, 2L bench bioreactor = 10-25/h")
         with c3:
-            co2_concern      = st.checkbox("CO2 stripping concern?",   value=True, key="co2_concern")
             gradient_concern = st.checkbox("Nutrient gradient concern?", value=True, key="grad_concern")
             scaleup_strategy = st.selectbox("Scale-up strategy", [
                 "Constant P/V (power per volume)",
@@ -1067,6 +1067,68 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
             rpm_large          = st.number_input("Target agitation (RPM)",     10.0,   500.0,  80.0,  5.0, key="rpm_large")
         with c5:
             vvm_large = st.number_input("Target gas flow rate (vvm)", 0.01, 1.0, 0.03, 0.005, key="vvm_large")
+
+        st.markdown("### Additional scale effects")
+        st.caption(
+            "pH lag, dissolved CO₂/pCO₂, foam, and temperature gradients are **engineering approximations**, not first-principles models."
+        )
+        ae1, ae2 = st.columns(2)
+        with ae1:
+            ph_lag_model = st.checkbox(
+                "Model pH control lag (base/acid loop slower in larger vessels)",
+                value=True,
+                key="ph_lag_model",
+            )
+            ph_loop_vs_lab = st.number_input(
+                "pH loop / dead-time vs lab (× slower); 0 = auto from volume ratio",
+                0.0,
+                15.0,
+                0.0,
+                0.1,
+                key="ph_loop_vs_lab",
+                help="Auto uses ~(V_target/V_lab)^(1/3) as a characteristic-time proxy.",
+            )
+            co2_concern = st.checkbox(
+                "Include dissolved CO₂ / pCO₂ (stripping & accumulation stress)",
+                value=True,
+                key="co2_concern",
+            )
+            dco2_vs_lab = st.number_input(
+                "dCO₂ / pCO₂ stress vs lab (×); 0 = auto from volume ratio",
+                0.0,
+                8.0,
+                0.0,
+                0.1,
+                key="dco2_vs_lab",
+                help="Replaces volume-only bins: higher values imply more dissolved CO₂ / headspace pressure concern.",
+            )
+        with ae2:
+            foam_model = st.checkbox(
+                "Model foam / antifoam challenges at scale",
+                value=True,
+                key="foam_model",
+            )
+            foam_stress_vs_lab = st.number_input(
+                "Foam / antifoam burden vs lab (×); 0 = auto from volume ratio",
+                0.0,
+                10.0,
+                0.0,
+                0.1,
+                key="foam_stress_vs_lab",
+            )
+            temp_gradient_model = st.checkbox(
+                "Model temperature gradients (meaningful typically ≥ ~1000 L)",
+                value=True,
+                key="temp_grad_model",
+            )
+            temp_gradient_threshold_L = st.number_input(
+                "Apply temperature-gradient factor when target volume ≥ (L)",
+                100.0,
+                20000.0,
+                1000.0,
+                50.0,
+                key="temp_grad_thresh",
+            )
 
         if st.button("Predict Scale-Up Performance", type="primary", use_container_width=True, key="scaleup_btn"):
 
@@ -1112,19 +1174,53 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 impact_notes.append(("ok", "Tip speed acceptable ({:.2f} m/s)".format(tip_large)))
             titer_factor *= shear_factor
 
-            if co2_concern:
-                if vol_large > 500:
-                    co2_factor = 0.88
-                    impact_notes.append(("warn", "Large vessel: CO2 accumulation likely — acidification risk"))
-                elif vol_large > 50:
-                    co2_factor = 0.94
-                    impact_notes.append(("warn", "Moderate CO2 risk — consider increased headspace sweep"))
+            vol_ratio = vol_large / max(vol_small, 1e-9)
+
+            if ph_lag_model:
+                ph_loop_ratio = ph_loop_vs_lab if ph_loop_vs_lab > 1e-9 else max(1.0, vol_ratio ** (1.0 / 3.0))
+                ph_lag_factor = max(0.92, 1.0 - 0.03 * min(max(0.0, ph_loop_ratio - 1.0), 8.0))
+                titer_factor *= ph_lag_factor
+                if ph_loop_ratio > 1.25:
+                    impact_notes.append(("warn", "pH control lag: loop ~{:.2f}× slower vs lab — expect wider pH swings until base/acid catches up".format(ph_loop_ratio)))
                 else:
-                    co2_factor = 0.98
-                    impact_notes.append(("ok", "CO2 stripping manageable at this scale"))
+                    impact_notes.append(("ok", "pH loop response similar to lab ({:.2f}×)".format(ph_loop_ratio)))
+            else:
+                ph_lag_factor = 1.0
+
+            if co2_concern:
+                dco2_ratio = dco2_vs_lab if dco2_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.22)
+                co2_factor = max(0.85, 1.0 - 0.065 * min(max(0.0, dco2_ratio - 1.0), 5.0))
                 titer_factor *= co2_factor
+                if dco2_ratio > 1.35:
+                    impact_notes.append(("warn", "Dissolved CO₂ / pCO₂ stress ~{:.2f}× lab — acidification or stripping imbalance likely; monitor".format(dco2_ratio)))
+                elif dco2_ratio > 1.08:
+                    impact_notes.append(("warn", "Moderate dCO₂ / pCO₂ vs lab ({:.2f}×) — tune sweep/sparge".format(dco2_ratio)))
+                else:
+                    impact_notes.append(("ok", "dCO₂ / pCO₂ proxy near lab ({:.2f}×)".format(dco2_ratio)))
             else:
                 co2_factor = 1.0
+
+            if foam_model:
+                foam_ratio = foam_stress_vs_lab if foam_stress_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.18)
+                foam_factor = max(0.93, 1.0 - 0.028 * min(max(0.0, foam_ratio - 1.0), 6.0))
+                titer_factor *= foam_factor
+                if foam_ratio > 1.4:
+                    impact_notes.append(("warn", "Foam / antifoam burden ~{:.2f}× lab — risk of carry-over, collapsed foam layers, or over-antifoam".format(foam_ratio)))
+                elif foam_ratio > 1.1:
+                    impact_notes.append(("warn", "Elevated foam stress vs lab ({:.2f}×) — verify antifoam strategy".format(foam_ratio)))
+                else:
+                    impact_notes.append(("ok", "Foam / antifoam demand near lab ({:.2f}×)".format(foam_ratio)))
+            else:
+                foam_factor = 1.0
+
+            if temp_gradient_model and vol_large >= temp_gradient_threshold_L:
+                temp_factor = max(0.90, 1.0 - 0.035 * min(max(0.0, np.log10(vol_large / max(temp_gradient_threshold_L, 1e-9))), 2.5))
+                titer_factor *= temp_factor
+                impact_notes.append(("warn", "Temperature gradients at {:.0f} L (≥{:.0f} L threshold) — monitor probes and jacket tuning".format(vol_large, temp_gradient_threshold_L)))
+            else:
+                temp_factor = 1.0
+                if temp_gradient_model and vol_large < temp_gradient_threshold_L:
+                    impact_notes.append(("ok", "Target volume below {:.0f} L — temperature-gradient factor not applied".format(temp_gradient_threshold_L)))
 
             if gradient_concern:
                 if mix_ratio > 5:
@@ -1152,6 +1248,10 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 else:
                     impact_notes.append(("ok", "Tip speed maintained ({:.2f} -> {:.2f} m/s)".format(tip_small, tip_large)))
 
+            ph_loop_disp = ph_loop_vs_lab if ph_loop_vs_lab > 1e-9 else max(1.0, vol_ratio ** (1.0 / 3.0))
+            dco2_disp = dco2_vs_lab if dco2_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.22)
+            foam_disp = foam_stress_vs_lab if foam_stress_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.18)
+
             # ── Predicted titer ───────────────────────────────────────────
             final_titer_small     = float(df_plot[target_col].iloc[-1])
             predicted_titer_large = final_titer_small * titer_factor
@@ -1176,11 +1276,15 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
             st.markdown("#### Engineering Parameters Comparison")
             eng_df = pd.DataFrame({
                 "Parameter":      ["Working Volume (L)", "Agitation (RPM)", "Tip Speed (m/s)",
-                                   "kLa (1/h)", "P/V ratio (relative)", "Mixing time (relative)", "Gas flow (vvm)"],
+                                   "kLa (1/h)", "P/V ratio (relative)", "Mixing time (relative)", "Gas flow (vvm)",
+                                   "pH loop vs lab (×)", "dCO₂/pCO₂ vs lab (×)", "Foam vs lab (×)", "Temp. gradient factor"],
                 "Current Scale":  ["{:.1f}".format(vol_small), "{:.0f}".format(rpm_small), "{:.3f}".format(tip_small),
-                                   "{:.1f}".format(kla_small), "1.00", "1.00", "{:.3f}".format(vvm_small)],
+                                   "{:.1f}".format(kla_small), "1.00", "1.00", "{:.3f}".format(vvm_small),
+                                   "1.00", "1.00", "1.00", "—"],
                 "Target Scale":   ["{:.1f}".format(vol_large), "{:.0f}".format(rpm_large), "{:.3f}".format(tip_large),
-                                   "{:.1f}".format(kla_large_est), "{:.2f}".format(pv_ratio), "{:.2f}".format(mix_ratio), "{:.3f}".format(vvm_large)],
+                                   "{:.1f}".format(kla_large_est), "{:.2f}".format(pv_ratio), "{:.2f}".format(mix_ratio), "{:.3f}".format(vvm_large),
+                                   "{:.2f}".format(ph_loop_disp), "{:.2f}".format(dco2_disp), "{:.2f}".format(foam_disp),
+                                   "{:.3f}".format(temp_factor) if (temp_gradient_model and vol_large >= temp_gradient_threshold_L) else "1.000 (n/a)"],
             })
             st.dataframe(eng_df, use_container_width=True, hide_index=True)
 
@@ -1209,14 +1313,25 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
             plt.close()
 
             st.markdown("#### Risk Factor Breakdown")
-            risk_labels = ["kLa / O2 transfer", "Shear stress", "CO2 stripping", "Nutrient gradients"]
+            risk_labels = [
+                "kLa / O2 transfer",
+                "Shear stress",
+                "Dissolved CO₂ / pCO₂",
+                "Nutrient gradients",
+                "pH control lag",
+                "Foam / antifoam",
+                "Temperature gradients",
+            ]
             risk_scores = [
                 max(0.0, 100.0 * (1.0 - kla_factor)),
                 max(0.0, 100.0 * (1.0 - shear_factor)),
                 max(0.0, 100.0 * (1.0 - co2_factor)),
                 max(0.0, 100.0 * (1.0 - grad_factor)),
+                max(0.0, 100.0 * (1.0 - ph_lag_factor)),
+                max(0.0, 100.0 * (1.0 - foam_factor)),
+                max(0.0, 100.0 * (1.0 - temp_factor)),
             ]
-            fig_r, ax_r = plt.subplots(figsize=(8, 3))
+            fig_r, ax_r = plt.subplots(figsize=(8, 5))
             bar_colors_r = ["#ef4444" if s > 15 else "#f97316" if s > 5 else "#22c55e" for s in risk_scores]
             bars_r = ax_r.barh(risk_labels, risk_scores, color=bar_colors_r, height=0.5)
             for bar, val in zip(bars_r, risk_scores):
@@ -1238,6 +1353,7 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 "Current titer: {:.2f} mg/L. Predicted large-scale titer: {:.2f} mg/L (factor: {:.0%}). "
                 "Key risks: {}. Parameters maintained: {}. "
                 "kLa: {:.1f} -> {:.1f}/h. Tip speed: {:.2f} -> {:.2f} m/s. "
+                "Additional proxies (not first-principles): pH loop {:.2f}x lab, dCO2/pCO2 {:.2f}x lab, foam {:.2f}x lab, temp. factor {:.3f} (threshold {:.0f} L). "
                 "Write a 4-5 sentence plain-English scale-up assessment covering: "
                 "(1) overall outlook, (2) the single biggest risk, (3) one concrete recommendation to improve large-scale titer."
             ).format(
@@ -1245,7 +1361,8 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 final_titer_small, predicted_titer_large, titer_factor,
                 "; ".join(warn_risks) if warn_risks else "None",
                 "; ".join(ok_risks)   if ok_risks   else "None",
-                kla_small, kla_large_est, tip_small, tip_large
+                kla_small, kla_large_est, tip_small, tip_large,
+                ph_loop_disp, dco2_disp, foam_disp, temp_factor, temp_gradient_threshold_L,
             )
             su_insight = ai_interpret(su_prompt)
             if su_insight:
@@ -1262,6 +1379,11 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 "  kLa:         {:.1f} -> {:.1f} /h\n"
                 "  P/V ratio:   {:.3f}x\n"
                 "  Mixing time: {:.2f}x longer\n\n"
+                "ADDITIONAL SCALE PROXIES (approximate):\n"
+                "  pH loop vs lab:     {:.2f}x\n"
+                "  dCO2/pCO2 vs lab:   {:.2f}x\n"
+                "  Foam vs lab:        {:.2f}x\n"
+                "  Temp. grad. factor: {:.3f} (if vol >= {:.0f} L and enabled)\n\n"
                 "TITER PREDICTION:\n"
                 "  Current scale:  {:.2f} mg/L\n"
                 "  Predicted:      {:.2f} mg/L\n"
@@ -1276,6 +1398,7 @@ relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
                 kla_small, kla_large_est,
                 pv_ratio,
                 mix_ratio,
+                ph_loop_disp, dco2_disp, foam_disp, temp_factor, temp_gradient_threshold_L,
                 final_titer_small, predicted_titer_large, titer_factor,
                 "\n".join(["  [!] " + m if s == "warn" else "  [OK] " + m for s, m in impact_notes]),
                 su_insight if su_insight else "Not available"
