@@ -78,7 +78,7 @@ def call_ai(prompt):
             st.session_state['ai_error'] = "GEMINI_API_KEY not found in Streamlit secrets."
             return None
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         st.session_state['ai_error'] = None
         return response.text.strip()
@@ -806,8 +806,8 @@ with tab_feedopt:
     st.markdown("## 🧪 Feed Strategy Optimizer")
     st.markdown("""
 Simulate different feed conditions and see the predicted impact on titer.
-Sliders are constrained to **mean ± 2 standard deviations** — the realistic operating range seen in your data.
-A **reliability score** tells you how trustworthy each prediction is based on how close your inputs are to real observed data.
+Sliders are constrained to **mean ± 2 standard deviations** — the realistic operating range in your data.
+A **reliability score** tells you how trustworthy the prediction is based on how far your inputs are from real observed data.
     """)
 
     if st.session_state.rf is None:
@@ -821,125 +821,135 @@ A **reliability score** tells you how trustworthy each prediction is based on ho
         numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
 
         if numeric_feats:
-            # Compute stats for constraints and correlation
             feat_means  = {f: float(df_plot[f].mean()) for f in numeric_feats}
-            feat_stds   = {f: float(df_plot[f].std())  for f in numeric_feats}
-            feat_mins   = {f: float(df_plot[f].min())  for f in numeric_feats}
-            feat_maxs   = {f: float(df_plot[f].max())  for f in numeric_feats}
+            feat_stds   = {f: float(df_plot[f].std()) + 1e-9 for f in numeric_feats}
+            feat_mins   = {f: float(df_plot[f].min()) for f in numeric_feats}
+            feat_maxs   = {f: float(df_plot[f].max()) for f in numeric_feats}
             corr_matrix = df_plot[numeric_feats].corr()
 
-            st.markdown("### Adjust Feature Values")
-            st.caption("Sliders are constrained to the realistic operating range (mean +/- 2 std). Correlated features adjust automatically.")
-
-            # Track which feature the user is actively changing
-            slider_vals = {}
-            anchor_feat = st.selectbox(
-                "Primary feature to adjust (others will auto-correct for biological consistency)",
-                numeric_feats, key="anchor_feat"
-            )
-
-            # Constrained slider bounds: mean ± 2*std, clamped to observed min/max
             def constrained_bounds(feat):
                 lo = max(feat_mins[feat], feat_means[feat] - 2 * feat_stds[feat])
                 hi = min(feat_maxs[feat], feat_means[feat] + 2 * feat_stds[feat])
                 if lo >= hi:
-                    lo = feat_mins[feat]
-                    hi = feat_maxs[feat]
-                return lo, hi
+                    lo, hi = feat_mins[feat], feat_maxs[feat]
+                return float(lo), float(hi)
 
-            # First pass — get the anchor feature value
-            lo, hi = constrained_bounds(anchor_feat)
-            step = (hi - lo) / 100 if (hi - lo) > 0 else 0.01
-            anchor_val = st.slider(
-                f"{anchor_feat} (primary)",
-                float(lo), float(hi), float(feat_means[anchor_feat]),
-                float(step), key=f"wi_anchor"
+            st.markdown("### Step 1 — Choose primary feature and adjust its value")
+            anchor_feat = st.selectbox(
+                "Primary feature to adjust",
+                numeric_feats, key="anchor_feat"
             )
-            anchor_delta_std = (anchor_val - feat_means[anchor_feat]) / (feat_stds[anchor_feat] + 1e-9)
 
-            # Auto-adjust correlated features
-            auto_adjusted = {}
+            lo_a, hi_a = constrained_bounds(anchor_feat)
+            step_a = (hi_a - lo_a) / 100 if (hi_a - lo_a) > 0 else 0.01
+            anchor_val = st.slider(
+                f"{anchor_feat}",
+                lo_a, hi_a,
+                float(np.clip(feat_means[anchor_feat], lo_a, hi_a)),
+                step_a, key="wi_anchor_val"
+            )
+
+            # Compute how many std devs the anchor moved
+            anchor_delta_std = (anchor_val - feat_means[anchor_feat]) / feat_stds[anchor_feat]
+
+            # Auto-calculate correlated feature values
+            auto_vals = {}
             for feat in numeric_feats:
                 if feat == anchor_feat:
-                    slider_vals[feat] = anchor_val
+                    auto_vals[feat] = anchor_val
                     continue
                 corr = corr_matrix.loc[anchor_feat, feat]
-                # Shift correlated features proportionally
                 suggested = feat_means[feat] + corr * anchor_delta_std * feat_stds[feat]
                 lo2, hi2  = constrained_bounds(feat)
-                suggested = float(np.clip(suggested, lo2, hi2))
-                if abs(corr) > 0.4:
-                    auto_adjusted[feat] = corr
-                slider_vals[feat] = suggested
+                auto_vals[feat] = float(np.clip(suggested, lo2, hi2))
 
-            # Show all sliders — auto-adjusted ones are pre-set but still editable
-            st.markdown("#### All Features (auto-adjusted based on correlations, override if needed)")
+            # Show auto-adjusted values and allow manual override
+            st.markdown("### Step 2 — Review auto-adjusted features (override if needed)")
+            st.caption("Features with correlation > 0.4 to your primary feature are automatically adjusted. You can override any value below.")
+
+            override_vals = {}
             cols = st.columns(min(3, len(numeric_feats)))
-            for i, feat in enumerate(numeric_feats):
+            col_idx = 0
+            for feat in numeric_feats:
                 if feat == anchor_feat:
+                    override_vals[feat] = anchor_val
                     continue
+                corr  = corr_matrix.loc[anchor_feat, feat]
                 lo2, hi2 = constrained_bounds(feat)
                 step2 = (hi2 - lo2) / 100 if (hi2 - lo2) > 0 else 0.01
-                corr = corr_matrix.loc[anchor_feat, feat]
-                label = feat
-                if abs(corr) > 0.4:
-                    direction = "up" if corr > 0 else "down"
-                    label = f"{feat} (auto: r={corr:.2f}, shifted {direction})"
-                with cols[i % len(cols)]:
-                    slider_vals[feat] = st.slider(
-                        label,
-                        float(lo2), float(hi2),
-                        float(np.clip(slider_vals[feat], lo2, hi2)),
-                        float(step2),
-                        key=f"wi_{feat}"
-                    )
 
-            # Build input row and predict
-            input_row     = pd.DataFrame([[slider_vals[f] for f in numeric_feats]], columns=numeric_feats)
-            valid_cols    = [c for c in feature_cols if c in input_row.columns]
-            whatif_pred   = rf.predict(input_row[valid_cols])[0]
+                with cols[col_idx % len(cols)]:
+                    if abs(corr) > 0.4:
+                        direction = "up" if corr > 0 else "down"
+                        st.markdown(f"**{feat}**")
+                        st.caption(f"Auto-adjusted (r={corr:.2f}, shifted {direction}): **{auto_vals[feat]:.3f}**")
+                    else:
+                        st.markdown(f"**{feat}**")
+                        st.caption(f"Not correlated with {anchor_feat}")
+
+                    override_vals[feat] = st.number_input(
+                        f"Override {feat}",
+                        min_value=lo2, max_value=hi2,
+                        value=float(auto_vals[feat]),
+                        step=step2,
+                        key=f"override_{feat}",
+                        label_visibility="collapsed"
+                    )
+                col_idx += 1
+
+            # Build final input using overrides
+            final_vals = {f: override_vals[f] for f in numeric_feats}
+            input_row  = pd.DataFrame([[final_vals[f] for f in numeric_feats]], columns=numeric_feats)
+            valid_cols = [c for c in feature_cols if c in input_row.columns]
+
             baseline_row  = pd.DataFrame([[feat_means[f] for f in numeric_feats]], columns=numeric_feats)
+            whatif_pred   = rf.predict(input_row[valid_cols])[0]
             baseline_pred = rf.predict(baseline_row[valid_cols])[0]
             delta         = whatif_pred - baseline_pred
 
-            # Reliability score — how close is this input to the nearest training point?
-            X_train    = df_plot[numeric_feats].dropna()
-            X_norm     = (X_train - X_train.mean()) / (X_train.std() + 1e-9)
-            input_norm = (input_row[numeric_feats] - X_train.mean()) / (X_train.std() + 1e-9)
-            distances  = np.sqrt(((X_norm.values - input_norm.values) ** 2).sum(axis=1))
-            min_dist   = distances.min()
-            # Convert distance to a 0-100 reliability score (lower distance = higher reliability)
-            p25 = np.percentile(distances, 25)
-            p75 = np.percentile(distances, 75)
-            reliability = max(0, min(100, 100 * (1 - (min_dist - p25) / (p75 - p25 + 1e-9))))
+            # Reliability score — exponential decay based on normalised distance to nearest training point
+            X_train   = df_plot[numeric_feats].dropna()
+            X_norm    = (X_train - X_train.mean()) / (X_train.std() + 1e-9)
+            in_norm   = pd.DataFrame(
+                [[(final_vals[f] - float(df_plot[f].mean())) / float(df_plot[f].std() + 1e-9)
+                  for f in numeric_feats]],
+                columns=numeric_feats
+            )
+            distances   = np.sqrt(((X_norm.values - in_norm.values) ** 2).sum(axis=1))
+            min_dist    = float(distances.min())
+            median_dist = float(np.median(distances))
+            # Reliability: 100% at distance=0, decays toward 0 as distance grows past the median
+            reliability = float(100 * np.exp(-2.0 * min_dist / (median_dist + 1e-9)))
+            reliability = min(100.0, max(0.0, reliability))
 
             st.markdown("---")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Predicted Titer",        f"{whatif_pred:.2f}")
-            c2.metric("Baseline (mean conditions)", f"{baseline_pred:.2f}")
-            c3.metric("Delta vs Baseline",       f"{delta:+.2f}")
-            c4.metric("Prediction Reliability",  f"{reliability:.0f}%",
-                      help="How similar your input is to real observed data. Below 50% means extrapolation — treat with caution.")
+            c1.metric("Predicted Titer",             f"{whatif_pred:.2f}")
+            c2.metric("Baseline (mean conditions)",  f"{baseline_pred:.2f}")
+            c3.metric("Delta vs Baseline",           f"{delta:+.2f}")
+            c4.metric("Prediction Reliability",      f"{reliability:.0f}%")
 
-            # Reliability warning
-            if reliability < 50:
-                st.error(f"⚠️ Low reliability ({reliability:.0f}%) — your input combination is far from any observed data point. This prediction is extrapolating outside the training range and is likely inaccurate. Try keeping sliders closer to the mean values.")
-            elif reliability < 75:
-                st.warning(f"⚠️ Moderate reliability ({reliability:.0f}%) — this combination is somewhat outside typical observed ranges. Treat the prediction with some caution.")
+            if reliability < 40:
+                st.error(f"⚠️ Low reliability ({reliability:.0f}%) — this combination is far outside observed data. The prediction is likely inaccurate. Move sliders closer to the mean values.")
+            elif reliability < 70:
+                st.warning(f"⚠️ Moderate reliability ({reliability:.0f}%) — this combination is somewhat outside typical ranges. Treat the prediction with caution.")
             else:
-                st.success(f"✅ High reliability ({reliability:.0f}%) — your input is within the observed data range. This prediction is trustworthy.")
+                st.success(f"✅ High reliability ({reliability:.0f}%) — this input is within the observed data range. The prediction is trustworthy.")
 
-            # Show which features were auto-adjusted
-            if auto_adjusted:
-                with st.expander("ℹ️ Why did some sliders move automatically?"):
-                    st.write("These features are correlated with your primary feature and were adjusted to maintain biological consistency:")
-                    for feat, corr in sorted(auto_adjusted.items(), key=lambda x: abs(x[1]), reverse=True):
+            # Expander explaining auto-adjustments
+            correlated = {f: corr_matrix.loc[anchor_feat, f] for f in numeric_feats
+                          if f != anchor_feat and abs(corr_matrix.loc[anchor_feat, f]) > 0.4}
+            if correlated:
+                with st.expander("ℹ️ Why did some features auto-adjust?"):
+                    st.write(f"These features are significantly correlated with **{anchor_feat}** and were shifted to maintain biological consistency:")
+                    for feat, corr in sorted(correlated.items(), key=lambda x: abs(x[1]), reverse=True):
                         direction = "increases" if corr > 0 else "decreases"
-                        st.write(f"- **{feat}**: correlation = {corr:.2f} — tends to {direction} when {anchor_feat} changes")
+                        st.write(f"- **{feat}**: r = {corr:.2f} — tends to {direction} when {anchor_feat} changes")
+                    st.write("You can override any of these values using the number inputs above.")
 
-            # Sensitivity chart — only within constrained range
-            st.subheader("Feature Sensitivity (within realistic operating range)")
-            st.caption("Shows how much titer changes as each feature is swept across its realistic range, with all other features at mean.")
+            # Sensitivity chart — constrained range only
+            st.subheader("Feature Sensitivity (realistic operating range)")
+            st.caption("How much titer changes as each feature is swept from its lower to upper operating bound, all others held at mean.")
             sensitivity = {}
             for feat in numeric_feats:
                 lo2, hi2 = constrained_bounds(feat)
@@ -952,9 +962,10 @@ A **reliability score** tells you how trustworthy each prediction is based on ho
                 sensitivity[feat] = max(preds) - min(preds)
 
             sens_df = pd.DataFrame(list(sensitivity.items()), columns=["Feature","Sensitivity"]).sort_values("Sensitivity")
-            fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats) * 0.4)))
-            colors_s = ["#ef4444" if sensitivity[f] == max(sensitivity.values()) else "#0d9488" for f in sens_df["Feature"]]
-            bars = ax_wi.barh(sens_df["Feature"], sens_df["Sensitivity"], color=colors_s, height=0.6)
+            top_feat_color = sens_df["Feature"].iloc[-1]
+            bar_colors = ["#ef4444" if f == top_feat_color else "#0d9488" for f in sens_df["Feature"]]
+            fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats) * 0.45)))
+            bars = ax_wi.barh(sens_df["Feature"], sens_df["Sensitivity"], color=bar_colors, height=0.6)
             for bar, val in zip(bars, sens_df["Sensitivity"]):
                 ax_wi.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
                            f"{val:.2f}", va="center", fontsize=8)
@@ -965,46 +976,317 @@ A **reliability score** tells you how trustworthy each prediction is based on ho
             st.pyplot(fig_wi, use_container_width=True)
             plt.close()
 
-            # Titer vs primary feature curve
+            # Response curve for primary feature
             st.subheader(f"Titer Response Curve — {anchor_feat}")
-            lo_a, hi_a = constrained_bounds(anchor_feat)
             sweep_anchor = np.linspace(lo_a, hi_a, 50)
             preds_curve  = []
             for val in sweep_anchor:
                 row = baseline_row.copy()
                 row[anchor_feat] = val
-                # Also shift correlated features
+                d_std = (val - feat_means[anchor_feat]) / feat_stds[anchor_feat]
                 for feat2 in numeric_feats:
                     if feat2 == anchor_feat:
                         continue
-                    corr2 = corr_matrix.loc[anchor_feat, feat2]
-                    delta_std2 = (val - feat_means[anchor_feat]) / (feat_stds[anchor_feat] + 1e-9)
-                    suggested2 = feat_means[feat2] + corr2 * delta_std2 * feat_stds[feat2]
-                    lo3, hi3 = constrained_bounds(feat2)
-                    row[feat2] = float(np.clip(suggested2, lo3, hi3))
+                    c2 = corr_matrix.loc[anchor_feat, feat2]
+                    s2 = feat_means[feat2] + c2 * d_std * feat_stds[feat2]
+                    l2, h2 = constrained_bounds(feat2)
+                    row[feat2] = float(np.clip(s2, l2, h2))
                 preds_curve.append(rf.predict(row[valid_cols])[0])
 
-            fig_curve, ax_curve = plt.subplots(figsize=(10, 3))
-            ax_curve.plot(sweep_anchor, preds_curve, color="steelblue", lw=2)
-            ax_curve.axvline(anchor_val, color="coral", ls="--", lw=1.5, label=f"Current: {anchor_val:.2f}")
-            ax_curve.axvline(feat_means[anchor_feat], color="gray", ls=":", lw=1, label=f"Mean: {feat_means[anchor_feat]:.2f}")
-            ax_curve.fill_between(sweep_anchor, preds_curve, alpha=0.1, color="steelblue")
-            ax_curve.set_xlabel(anchor_feat); ax_curve.set_ylabel(f"Predicted {target_col}")
-            ax_curve.set_title(f"How {target_col} responds to {anchor_feat} (with correlated features auto-adjusted)")
-            ax_curve.legend(fontsize=9); ax_curve.grid(True, alpha=0.3)
+            fig_c, ax_c = plt.subplots(figsize=(10, 3))
+            ax_c.plot(sweep_anchor, preds_curve, color="steelblue", lw=2)
+            ax_c.axvline(anchor_val, color="coral", ls="--", lw=1.5, label=f"Current: {anchor_val:.2f}")
+            ax_c.axvline(feat_means[anchor_feat], color="gray", ls=":", lw=1, label=f"Mean: {feat_means[anchor_feat]:.2f}")
+            ax_c.fill_between(sweep_anchor, preds_curve, alpha=0.1, color="steelblue")
+            ax_c.set_xlabel(anchor_feat); ax_c.set_ylabel(f"Predicted {target_col}")
+            ax_c.set_title(f"How {target_col} responds to changes in {anchor_feat}")
+            ax_c.legend(fontsize=9); ax_c.grid(True, alpha=0.3)
             plt.tight_layout()
-            st.pyplot(fig_curve, use_container_width=True)
+            st.pyplot(fig_c, use_container_width=True)
             plt.close()
 
             top_sensitive = sens_df.sort_values("Sensitivity", ascending=False).head(3)
             feed_insight = ai_interpret(f"""You are a bioprocess scientist.
 What-if titer: {whatif_pred:.2f} vs baseline {baseline_pred:.2f} (delta: {delta:+.2f}).
-Prediction reliability score: {reliability:.0f}%.
-Primary feature adjusted: {anchor_feat} set to {anchor_val:.2f} (mean: {feat_means[anchor_feat]:.2f}).
-Top 3 most sensitive features within realistic range: {", ".join(top_sensitive["Feature"].tolist())}.
+Prediction reliability: {reliability:.0f}%.
+Primary feature: {anchor_feat} set to {anchor_val:.2f} (mean: {feat_means[anchor_feat]:.2f}).
+Top 3 most sensitive features: {", ".join(top_sensitive["Feature"].tolist())}.
 In 2-3 sentences, give a plain-English feed strategy recommendation.
-If reliability is below 75%, mention that the prediction should be treated cautiously.""")
+If reliability is below 70%, note that the prediction should be treated cautiously.""")
             show_insight(feed_insight, "🧪")
+
+
+# =============================================================================
+# TAB 4 — SCALE-UP PREDICTOR
+# =============================================================================
+with tab_scaleup:
+    st.markdown("## 📐 Scale-Up Predictor")
+    st.markdown("""
+Estimate how your titer will change when moving from your current lab scale to a larger bioreactor.
+Enter your current and target scale parameters and the model applies established bioprocess engineering
+relationships (kLa, tip speed, P/V, mixing time) to predict the scaled outcome.
+    """)
+
+    if st.session_state.rf is None:
+        st.info("Run the Main Analysis first.")
+    else:
+        rf           = st.session_state.rf
+        df_plot      = st.session_state.df_plot
+        target_col   = st.session_state.target_col
+        time_col     = st.session_state.time_col
+        y            = st.session_state.y
+        rf_pred      = st.session_state.rf_pred
+
+        st.markdown("### Current Scale Parameters")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            vol_small          = st.number_input("Current working volume (L)",  0.1,  1000.0,   2.0, 0.1,  key="vol_small")
+            impeller_dia_small = st.number_input("Impeller diameter (m)",       0.01,    1.0,  0.05, 0.005, key="imp_small")
+            rpm_small          = st.number_input("Agitation speed (RPM)",      10.0,  1000.0, 200.0, 10.0, key="rpm_small")
+        with c2:
+            vvm_small = st.number_input("Gas flow rate (vvm)", 0.01, 1.0, 0.05, 0.005, key="vvm_small")
+            kla_small = st.number_input("kLa at current scale (1/h)", 1.0, 200.0, 15.0, 0.5, key="kla_small",
+                                        help="Typical: ambr15 = 8-15/h, 2L bench bioreactor = 10-25/h")
+        with c3:
+            co2_concern      = st.checkbox("CO2 stripping concern?",   value=True, key="co2_concern")
+            gradient_concern = st.checkbox("Nutrient gradient concern?", value=True, key="grad_concern")
+            scaleup_strategy = st.selectbox("Scale-up strategy", [
+                "Constant P/V (power per volume)",
+                "Constant tip speed",
+                "Constant kLa",
+                "Constant mixing time",
+            ], key="su_strategy")
+
+        st.markdown("---")
+        st.markdown("### Target Scale Parameters")
+        c4, c5 = st.columns(2)
+        with c4:
+            vol_large          = st.number_input("Target working volume (L)",   1.0, 50000.0, 200.0, 10.0, key="vol_large")
+            impeller_dia_large = st.number_input("Target impeller diameter (m)",0.05,    5.0,  0.25, 0.05, key="imp_large")
+            rpm_large          = st.number_input("Target agitation (RPM)",     10.0,   500.0,  80.0,  5.0, key="rpm_large")
+        with c5:
+            vvm_large = st.number_input("Target gas flow rate (vvm)", 0.01, 1.0, 0.03, 0.005, key="vvm_large")
+
+        if st.button("Predict Scale-Up Performance", type="primary", use_container_width=True, key="scaleup_btn"):
+
+            # ── Engineering calculations ──────────────────────────────────
+            tip_small = np.pi * impeller_dia_small * rpm_small / 60.0
+            tip_large = np.pi * impeller_dia_large * rpm_large / 60.0
+
+            pv_small  = (rpm_small**3) * (impeller_dia_small**5) / max(vol_small,  1e-9)
+            pv_large  = (rpm_large**3) * (impeller_dia_large**5) / max(vol_large,  1e-9)
+            pv_ratio  = pv_large / max(pv_small, 1e-9)
+
+            # van't Riet correlation: kLa = C * (P/V)^0.4 * vvm^0.5
+            kla_large_est = kla_small * (pv_ratio**0.4) * ((vvm_large / max(vvm_small, 1e-9))**0.5)
+
+            mix_small = (vol_small**(1.0/3.0)) / max(rpm_small * impeller_dia_small**2, 1e-9)
+            mix_large = (vol_large**(1.0/3.0)) / max(rpm_large * impeller_dia_large**2, 1e-9)
+            mix_ratio = mix_large / max(mix_small, 1e-9)
+
+            # ── Titer impact factors ──────────────────────────────────────
+            titer_factor = 1.0
+            impact_notes = []
+
+            kla_ratio = kla_large_est / max(kla_small, 1e-9)
+            if kla_ratio < 0.5:
+                kla_factor = 0.70 + 0.30 * kla_ratio
+                impact_notes.append(("warn", "Severe kLa drop ({:.1f} vs {:.1f}/h) — significant O2 limitation expected".format(kla_large_est, kla_small)))
+            elif kla_ratio < 0.8:
+                kla_factor = 0.85 + 0.15 * kla_ratio
+                impact_notes.append(("warn", "Moderate kLa drop ({:.1f} vs {:.1f}/h) — monitor DO closely".format(kla_large_est, kla_small)))
+            else:
+                kla_factor = min(1.0, 0.95 + 0.05 * kla_ratio)
+                impact_notes.append(("ok", "kLa maintained well ({:.1f} vs {:.1f}/h)".format(kla_large_est, kla_small)))
+            titer_factor *= kla_factor
+
+            if tip_large > 2.0:
+                shear_factor = max(0.70, 1.0 - 0.15 * (tip_large - 2.0))
+                impact_notes.append(("warn", "High tip speed ({:.2f} m/s) — shear stress may damage cells".format(tip_large)))
+            elif tip_large > 1.5:
+                shear_factor = 0.92
+                impact_notes.append(("warn", "Moderate tip speed ({:.2f} m/s) — monitor cell viability".format(tip_large)))
+            else:
+                shear_factor = 1.0
+                impact_notes.append(("ok", "Tip speed acceptable ({:.2f} m/s)".format(tip_large)))
+            titer_factor *= shear_factor
+
+            if co2_concern:
+                if vol_large > 500:
+                    co2_factor = 0.88
+                    impact_notes.append(("warn", "Large vessel: CO2 accumulation likely — acidification risk"))
+                elif vol_large > 50:
+                    co2_factor = 0.94
+                    impact_notes.append(("warn", "Moderate CO2 risk — consider increased headspace sweep"))
+                else:
+                    co2_factor = 0.98
+                    impact_notes.append(("ok", "CO2 stripping manageable at this scale"))
+                titer_factor *= co2_factor
+            else:
+                co2_factor = 1.0
+
+            if gradient_concern:
+                if mix_ratio > 5:
+                    grad_factor = 0.85
+                    impact_notes.append(("warn", "Mixing time {:.1f}x longer — significant nutrient gradients expected".format(mix_ratio)))
+                elif mix_ratio > 2:
+                    grad_factor = 0.93
+                    impact_notes.append(("warn", "Mixing time {:.1f}x longer — some gradients possible, adjust feed points".format(mix_ratio)))
+                else:
+                    grad_factor = 1.0
+                    impact_notes.append(("ok", "Mixing time increase manageable ({:.1f}x)".format(mix_ratio)))
+                titer_factor *= grad_factor
+            else:
+                grad_factor = 1.0
+
+            if scaleup_strategy == "Constant P/V (power per volume)":
+                if abs(pv_ratio - 1.0) > 0.2:
+                    impact_notes.append(("warn", "P/V ratio at target is {:.2f}x — not constant P/V. Adjust RPM or impeller.".format(pv_ratio)))
+                else:
+                    impact_notes.append(("ok", "P/V maintained ({:.2f}x)".format(pv_ratio)))
+            elif scaleup_strategy == "Constant tip speed":
+                diff_pct = abs(tip_large - tip_small) / max(tip_small, 1e-9)
+                if diff_pct > 0.15:
+                    impact_notes.append(("warn", "Tip speed changed {:.2f} -> {:.2f} m/s — not constant tip speed".format(tip_small, tip_large)))
+                else:
+                    impact_notes.append(("ok", "Tip speed maintained ({:.2f} -> {:.2f} m/s)".format(tip_small, tip_large)))
+
+            # ── Predicted titer ───────────────────────────────────────────
+            final_titer_small     = float(df_plot[target_col].iloc[-1])
+            predicted_titer_large = final_titer_small * titer_factor
+
+            hist_times         = df_plot[time_col].values if time_col in df_plot.columns else np.arange(len(df_plot))
+            actual_curve       = df_plot[target_col].values
+            day_max            = float(hist_times.max()) if len(hist_times) > 0 else 14.0
+            sf_time            = np.array([1.0 - (1.0 - titer_factor) * (float(t) / (day_max + 1e-9))**0.7 for t in hist_times])
+            scaled_curve       = actual_curve * sf_time
+
+            # ── Display ───────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("### Results")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Current Scale Titer",        "{:.2f} mg/L".format(final_titer_small))
+            m2.metric("Predicted Large Scale Titer", "{:.2f} mg/L".format(predicted_titer_large),
+                      delta="{:+.2f} mg/L".format(predicted_titer_large - final_titer_small))
+            m3.metric("Overall Scale Factor",        "{:.1%}".format(titer_factor))
+            m4.metric("Volume Increase",             "{:.0f}x".format(vol_large / max(vol_small, 1e-9)))
+
+            st.markdown("#### Engineering Parameters Comparison")
+            eng_df = pd.DataFrame({
+                "Parameter":      ["Working Volume (L)", "Agitation (RPM)", "Tip Speed (m/s)",
+                                   "kLa (1/h)", "P/V ratio (relative)", "Mixing time (relative)", "Gas flow (vvm)"],
+                "Current Scale":  ["{:.1f}".format(vol_small), "{:.0f}".format(rpm_small), "{:.3f}".format(tip_small),
+                                   "{:.1f}".format(kla_small), "1.00", "1.00", "{:.3f}".format(vvm_small)],
+                "Target Scale":   ["{:.1f}".format(vol_large), "{:.0f}".format(rpm_large), "{:.3f}".format(tip_large),
+                                   "{:.1f}".format(kla_large_est), "{:.2f}".format(pv_ratio), "{:.2f}".format(mix_ratio), "{:.3f}".format(vvm_large)],
+            })
+            st.dataframe(eng_df, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Risk Assessment")
+            for sev, msg in impact_notes:
+                if sev == "warn":
+                    st.warning("⚠️ " + msg)
+                else:
+                    st.success("✅ " + msg)
+
+            st.markdown("#### Predicted Titer Trajectory")
+            fig_su, ax_su = plt.subplots(figsize=(12, 4))
+            ax_su.plot(hist_times, actual_curve, 'o-', color='steelblue', lw=2,
+                       label="Current scale ({:.0f}L)".format(vol_small), zorder=3)
+            ax_su.plot(hist_times, scaled_curve, 's--', color='coral', lw=2,
+                       label="Predicted at {:.0f}L".format(vol_large), alpha=0.85)
+            ax_su.fill_between(hist_times, scaled_curve * 0.85, scaled_curve * 1.15,
+                               alpha=0.15, color='coral', label="+/-15% uncertainty band")
+            ax_su.set_xlabel(time_col if time_col else "Day")
+            ax_su.set_ylabel("{} (mg/L)".format(target_col))
+            ax_su.set_title("Titer: {:.0f}L -> {:.0f}L  |  Scale factor: {:.0%}".format(vol_small, vol_large, titer_factor))
+            ax_su.legend(fontsize=9)
+            ax_su.grid(True, alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig_su, use_container_width=True)
+            plt.close()
+
+            st.markdown("#### Risk Factor Breakdown")
+            risk_labels = ["kLa / O2 transfer", "Shear stress", "CO2 stripping", "Nutrient gradients"]
+            risk_scores = [
+                max(0.0, 100.0 * (1.0 - kla_factor)),
+                max(0.0, 100.0 * (1.0 - shear_factor)),
+                max(0.0, 100.0 * (1.0 - co2_factor)),
+                max(0.0, 100.0 * (1.0 - grad_factor)),
+            ]
+            fig_r, ax_r = plt.subplots(figsize=(8, 3))
+            bar_colors_r = ["#ef4444" if s > 15 else "#f97316" if s > 5 else "#22c55e" for s in risk_scores]
+            bars_r = ax_r.barh(risk_labels, risk_scores, color=bar_colors_r, height=0.5)
+            for bar, val in zip(bars_r, risk_scores):
+                ax_r.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
+                          "{:.1f}%".format(val), va='center', fontsize=9)
+            ax_r.set_xlabel("Estimated titer loss (%)")
+            ax_r.set_title("Scale-Up Risk Factors")
+            ax_r.set_xlim(0, max(risk_scores + [1]) * 1.4)
+            ax_r.grid(True, alpha=0.2, axis='x')
+            plt.tight_layout()
+            st.pyplot(fig_r, use_container_width=True)
+            plt.close()
+
+            warn_risks = [m for s, m in impact_notes if s == "warn"]
+            ok_risks   = [m for s, m in impact_notes if s == "ok"]
+            su_prompt  = (
+                "You are an expert bioprocess scale-up engineer. "
+                "Scale-up from {:.0f}L to {:.0f}L using strategy: {}. "
+                "Current titer: {:.2f} mg/L. Predicted large-scale titer: {:.2f} mg/L (factor: {:.0%}). "
+                "Key risks: {}. Parameters maintained: {}. "
+                "kLa: {:.1f} -> {:.1f}/h. Tip speed: {:.2f} -> {:.2f} m/s. "
+                "Write a 4-5 sentence plain-English scale-up assessment covering: "
+                "(1) overall outlook, (2) the single biggest risk, (3) one concrete recommendation to improve large-scale titer."
+            ).format(
+                vol_small, vol_large, scaleup_strategy,
+                final_titer_small, predicted_titer_large, titer_factor,
+                "; ".join(warn_risks) if warn_risks else "None",
+                "; ".join(ok_risks)   if ok_risks   else "None",
+                kla_small, kla_large_est, tip_small, tip_large
+            )
+            su_insight = ai_interpret(su_prompt)
+            if su_insight:
+                st.markdown("#### AI Scale-Up Assessment")
+                st.info(su_insight)
+
+            su_text = (
+                "SCALE-UP PREDICTION REPORT\n"
+                "Generated: {}\n\n"
+                "VOLUME: {:.1f}L -> {:.1f}L ({:.0f}x)\n"
+                "STRATEGY: {}\n\n"
+                "ENGINEERING:\n"
+                "  Tip speed:   {:.3f} -> {:.3f} m/s\n"
+                "  kLa:         {:.1f} -> {:.1f} /h\n"
+                "  P/V ratio:   {:.3f}x\n"
+                "  Mixing time: {:.2f}x longer\n\n"
+                "TITER PREDICTION:\n"
+                "  Current scale:  {:.2f} mg/L\n"
+                "  Predicted:      {:.2f} mg/L\n"
+                "  Scale factor:   {:.1%}\n\n"
+                "RISK ASSESSMENT:\n{}\n\n"
+                "AI ASSESSMENT:\n{}"
+            ).format(
+                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                vol_small, vol_large, vol_large / max(vol_small, 1e-9),
+                scaleup_strategy,
+                tip_small, tip_large,
+                kla_small, kla_large_est,
+                pv_ratio,
+                mix_ratio,
+                final_titer_small, predicted_titer_large, titer_factor,
+                "\n".join(["  [!] " + m if s == "warn" else "  [OK] " + m for s, m in impact_notes]),
+                su_insight if su_insight else "Not available"
+            )
+            st.download_button(
+                "📄 Download Scale-Up Report",
+                data=su_text,
+                file_name="scaleup_{:.0f}L_to_{:.0f}L_{}.txt".format(vol_small, vol_large, datetime.now().strftime("%Y%m%d")),
+                mime="text/plain",
+                use_container_width=True
+            )
+
 
 
 # =============================================================================
