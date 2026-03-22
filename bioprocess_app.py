@@ -16,7 +16,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import io
 import tempfile
 import os
-import google.generativeai as genai
+import anthropic
 from datetime import datetime
 
 # =============================================================================
@@ -474,15 +474,20 @@ st.markdown("""
 # =============================================================================
 def call_ai(prompt):
     try:
-        api_key = st.secrets.get("GEMINI_API_KEY", None)
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
         if not api_key:
-            st.session_state['ai_error'] = "GEMINI_API_KEY not found in Streamlit secrets."
+            st.session_state['ai_error'] = "ANTHROPIC_API_KEY not found in Streamlit secrets."
             return None
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+        )
         st.session_state['ai_error'] = None
-        return response.text.strip()
+        return message.content[0].text.strip()
     except Exception as e:
         st.session_state['ai_error'] = str(e)
         return None
