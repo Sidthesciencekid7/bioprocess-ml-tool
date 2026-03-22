@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import seaborn as sns
 import shap
 from sklearn.ensemble import RandomForestRegressor
@@ -21,22 +22,408 @@ from datetime import datetime
 # =============================================================================
 # PAGE CONFIG
 # =============================================================================
-st.set_page_config(page_title="Bioprocess ML Reporter", page_icon="🧬", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Bioprocess ML Reporter",
+    page_icon="🧬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
+# =============================================================================
+# GLOBAL MATPLOTLIB STYLE — applied once, affects all plots
+# =============================================================================
+_PALETTE = {
+    "bg":        "#0F1117",
+    "card_bg":   "#161B22",
+    "surface":   "#1C2333",
+    "border":    "#2D3548",
+    "text":      "#E6EDF3",
+    "text_dim":  "#8B949E",
+    "primary":   "#58A6FF",
+    "teal":      "#3DDBD9",
+    "emerald":   "#34D399",
+    "coral":     "#F97583",
+    "amber":     "#E3B341",
+    "purple":    "#BC8CFF",
+    "rose":      "#FF7EB6",
+    "grid":      "#21262D",
+}
+
+plt.rcParams.update({
+    "figure.facecolor":   _PALETTE["card_bg"],
+    "axes.facecolor":     _PALETTE["surface"],
+    "axes.edgecolor":     _PALETTE["border"],
+    "axes.labelcolor":    _PALETTE["text"],
+    "axes.titlesize":     13,
+    "axes.titleweight":   600,
+    "axes.titlepad":      14,
+    "axes.labelsize":     10,
+    "axes.labelpad":      8,
+    "axes.grid":          True,
+    "grid.color":         _PALETTE["grid"],
+    "grid.alpha":         0.5,
+    "grid.linewidth":     0.4,
+    "xtick.color":        _PALETTE["text_dim"],
+    "ytick.color":        _PALETTE["text_dim"],
+    "xtick.labelsize":    9,
+    "ytick.labelsize":    9,
+    "text.color":         _PALETTE["text"],
+    "legend.facecolor":   _PALETTE["surface"],
+    "legend.edgecolor":   _PALETTE["border"],
+    "legend.fontsize":    8.5,
+    "legend.framealpha":  0.85,
+    "legend.labelcolor":  _PALETTE["text"],
+    "font.family":        "sans-serif",
+    "savefig.facecolor":  _PALETTE["card_bg"],
+    "savefig.edgecolor":  "none",
+})
+
+PLOT_COLORS = [
+    _PALETTE["primary"], _PALETTE["teal"], _PALETTE["coral"],
+    _PALETTE["amber"], _PALETTE["purple"], _PALETTE["emerald"],
+    _PALETTE["rose"], "#7EE787", "#FFA657", "#79C0FF",
+]
+
+# =============================================================================
+# CUSTOM CSS — complete visual overhaul
+# =============================================================================
 st.markdown("""
 <style>
-    .main-header { background: linear-gradient(135deg, #1a3a4a 0%, #0d6e8a 100%); padding: 1.5rem 2rem; border-radius: 12px; margin-bottom: 1.5rem; color: white; }
-    .main-header h1 { margin: 0; font-size: 2rem; }
-    .main-header p  { margin: 0.3rem 0 0; opacity: 0.8; font-size: 0.95rem; }
-    .step-card { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #0d6e8a; padding: 1rem 1.2rem; border-radius: 8px; margin-bottom: 1rem; }
-    .flag-warn { background: #fff7ed; border-left: 4px solid #f97316; padding: 0.5rem 1rem; border-radius: 6px; margin: 0.3rem 0; }
-    .flag-ok   { background: #f0fdf4; border-left: 4px solid #22c55e; padding: 0.5rem 1rem; border-radius: 6px; margin: 0.3rem 0; }
-    .insight-box { background: #f0f9ff; border: 1px solid #bae6fd; border-left: 4px solid #0284c7; padding: 1rem 1.2rem; border-radius: 8px; margin: 0.8rem 0; line-height: 1.6; }
-    .chart-insight { background: #fafafa; border: 1px solid #e5e7eb; padding: 0.7rem 1rem; border-radius: 6px; margin-top: 0.5rem; font-size: 0.9rem; color: #374151; }
-    .warning-box { background: #fef3c7; border: 1px solid #fcd34d; padding: 0.8rem 1rem; border-radius: 8px; margin: 0.5rem 0; font-size: 0.9rem; }
-    .ai-badge { display: inline-block; background: #4f46e5; color: white; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem; vertical-align: middle; }
+/* ── Import fonts ─────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Root variables ───────────────────────────────────── */
+:root {
+    --bg:        #0F1117;
+    --card-bg:   #161B22;
+    --surface:   #1C2333;
+    --border:    #2D3548;
+    --text:      #E6EDF3;
+    --text-dim:  #8B949E;
+    --primary:   #58A6FF;
+    --teal:      #3DDBD9;
+    --emerald:   #34D399;
+    --coral:     #F97583;
+    --amber:     #E3B341;
+    --purple:    #BC8CFF;
+    --radius:    10px;
+    --shadow:    0 2px 12px rgba(0,0,0,.35);
+}
+
+/* ── Global typography ────────────────────────────────── */
+html, body, [class*="css"] {
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.02em;
+}
+
+/* ── Hero header ──────────────────────────────────────── */
+.hero-header {
+    background: linear-gradient(135deg, #0D1B2A 0%, #1B2838 40%, #162230 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2rem 2.5rem;
+    margin-bottom: 1.8rem;
+    position: relative;
+    overflow: hidden;
+}
+.hero-header::before {
+    content: '';
+    position: absolute;
+    top: -50%; right: -20%;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(61,219,217,.08) 0%, transparent 70%);
+    pointer-events: none;
+}
+.hero-header::after {
+    content: '';
+    position: absolute;
+    bottom: -30%; left: -10%;
+    width: 300px; height: 300px;
+    background: radial-gradient(circle, rgba(88,166,255,.06) 0%, transparent 70%);
+    pointer-events: none;
+}
+.hero-header h1 {
+    margin: 0 0 .35rem 0;
+    font-size: 1.85rem;
+    font-weight: 700 !important;
+    letter-spacing: -0.03em;
+    background: linear-gradient(135deg, #E6EDF3 30%, #3DDBD9 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.hero-header p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: .92rem;
+    line-height: 1.5;
+    max-width: 620px;
+}
+
+/* ── Step cards ───────────────────────────────────────── */
+.step-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--teal);
+    border-radius: var(--radius);
+    padding: 1rem 1.3rem;
+    margin: 1.4rem 0 1rem;
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+}
+.step-card .step-num {
+    background: linear-gradient(135deg, var(--teal), var(--primary));
+    color: var(--bg);
+    font-weight: 700;
+    font-size: .75rem;
+    width: 26px; height: 26px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.step-card .step-text {
+    font-weight: 600;
+    font-size: .95rem;
+    color: var(--text);
+}
+
+/* ── Insight boxes (AI) ───────────────────────────────── */
+.ai-insight {
+    background: linear-gradient(135deg, rgba(88,166,255,.06) 0%, rgba(61,219,217,.04) 100%);
+    border: 1px solid rgba(88,166,255,.18);
+    border-left: 3px solid var(--primary);
+    border-radius: var(--radius);
+    padding: 1rem 1.3rem;
+    margin: .7rem 0 1rem;
+    font-size: .9rem;
+    line-height: 1.65;
+    color: var(--text);
+    position: relative;
+}
+.ai-insight::before {
+    content: '✦ AI';
+    position: absolute;
+    top: -9px; right: 14px;
+    background: var(--primary);
+    color: var(--bg);
+    font-size: .62rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+
+/* ── Warning / success flag boxes ─────────────────────── */
+.flag-warn {
+    background: rgba(249,117,131,.06);
+    border: 1px solid rgba(249,117,131,.2);
+    border-left: 3px solid var(--coral);
+    padding: .6rem 1rem;
+    border-radius: 8px;
+    margin: .3rem 0;
+    font-size: .88rem;
+    color: var(--text);
+}
+.flag-ok {
+    background: rgba(52,211,153,.06);
+    border: 1px solid rgba(52,211,153,.2);
+    border-left: 3px solid var(--emerald);
+    padding: .6rem 1rem;
+    border-radius: 8px;
+    margin: .3rem 0;
+    font-size: .88rem;
+    color: var(--text);
+}
+
+/* ── Warning box (amber) ──────────────────────────────── */
+.warning-box {
+    background: rgba(227,179,65,.07);
+    border: 1px solid rgba(227,179,65,.25);
+    border-left: 3px solid var(--amber);
+    padding: .75rem 1rem;
+    border-radius: 8px;
+    margin: .5rem 0;
+    font-size: .88rem;
+    color: var(--text);
+}
+
+/* ── Section divider ──────────────────────────────────── */
+.section-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+    margin: 1.5rem 0;
+}
+
+/* ── Sidebar polish ───────────────────────────────────── */
+section[data-testid="stSidebar"] {
+    background: var(--card-bg) !important;
+    border-right: 1px solid var(--border) !important;
+}
+section[data-testid="stSidebar"] .stSlider label,
+section[data-testid="stSidebar"] .stCheckbox label {
+    font-size: .85rem !important;
+}
+
+/* ── Tab styling ──────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 4px;
+    border: 1px solid var(--border);
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+    font-size: .85rem !important;
+    padding: .5rem 1rem !important;
+    color: var(--text-dim) !important;
+}
+.stTabs [aria-selected="true"] {
+    background: var(--surface) !important;
+    color: var(--teal) !important;
+    border: 1px solid var(--border) !important;
+}
+
+/* ── Metrics ──────────────────────────────────────────── */
+[data-testid="stMetric"] {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem;
+}
+[data-testid="stMetricLabel"] {
+    font-size: .78rem !important;
+    color: var(--text-dim) !important;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.35rem !important;
+    font-weight: 600 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    color: var(--text) !important;
+}
+
+/* ── Buttons ──────────────────────────────────────────── */
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--primary) 100%) !important;
+    color: var(--bg) !important;
+    font-weight: 600 !important;
+    border: none !important;
+    border-radius: 10px !important;
+    padding: .65rem 1.5rem !important;
+    font-size: .9rem !important;
+    letter-spacing: .01em;
+    transition: opacity .2s ease, transform .15s ease;
+}
+.stButton > button[kind="primary"]:hover {
+    opacity: .88;
+    transform: translateY(-1px);
+}
+
+/* ── Dataframe ────────────────────────────────────────── */
+.stDataFrame {
+    border-radius: var(--radius) !important;
+    border: 1px solid var(--border) !important;
+}
+
+/* ── Download buttons ─────────────────────────────────── */
+.stDownloadButton > button {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+    transition: border-color .2s ease;
+}
+.stDownloadButton > button:hover {
+    border-color: var(--teal) !important;
+}
+
+/* ── Expander ─────────────────────────────────────────── */
+.streamlit-expanderHeader {
+    font-weight: 500 !important;
+    font-size: .9rem !important;
+}
+
+/* ── File uploader ────────────────────────────────────── */
+[data-testid="stFileUploader"] {
+    border: 1px dashed var(--border) !important;
+    border-radius: var(--radius) !important;
+    background: var(--surface) !important;
+}
+
+/* ── Selectbox / multiselect ──────────────────────────── */
+.stSelectbox label, .stMultiSelect label {
+    font-size: .85rem !important;
+    font-weight: 500 !important;
+}
+
+/* ── Sidebar version badge ────────────────────────────── */
+.sidebar-badge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .5rem .8rem;
+    text-align: center;
+    font-size: .72rem;
+    color: var(--text-dim);
+    margin-top: .5rem;
+}
+.sidebar-badge span {
+    color: var(--teal);
+    font-weight: 600;
+}
+
+/* ── Sub-section header ───────────────────────────────── */
+.sub-header {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin: 1.4rem 0 .8rem;
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--border);
+}
+.sub-header .icon {
+    font-size: 1.1rem;
+}
+.sub-header .title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* hide default st header decoration */
+header[data-testid="stHeader"] {
+    background: var(--bg) !important;
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# HELPER: styled HTML components
+# =============================================================================
+def step_card(number, text):
+    return f'<div class="step-card"><div class="step-num">{number}</div><div class="step-text">{text}</div></div>'
+
+def sub_header(icon, title):
+    return f'<div class="sub-header"><span class="icon">{icon}</span><span class="title">{title}</span></div>'
+
+def ai_insight_box(text):
+    return f'<div class="ai-insight">{text}</div>'
+
+def section_divider():
+    return '<hr class="section-divider">'
+
 
 # =============================================================================
 # SESSION STATE
@@ -48,28 +435,42 @@ for key in ['df','feature_cols','target_col','time_col','group_col','rf','xgb',
     if key not in st.session_state:
         st.session_state[key] = None
 
+
 # =============================================================================
 # SIDEBAR
 # =============================================================================
 with st.sidebar:
-    st.markdown("## ⚙️ Settings")
-    st.markdown("---")
-    st.markdown("### 🚩 Process Flag Thresholds")
-    nh3_thresh = st.slider("NH3 max (mM)",            1.0, 20.0, 5.0,  0.5)
-    glc_thresh = st.slider("Glucose min (mM)",         0.1,  5.0, 2.0,  0.1)
-    vcd_thresh = st.slider("Min peak VCD (x10^6/mL)", 1.0, 50.0, 10.0, 1.0)
-    lg_thresh  = st.slider("Lactate/Glucose ratio",    0.5,  5.0, 2.0,  0.1)
-    st.markdown("---")
-    st.markdown("### 🤖 Model Settings")
+    st.markdown("### ⚙️ Settings")
+    st.markdown(section_divider(), unsafe_allow_html=True)
+
+    st.markdown("**🚩 Process Flag Thresholds**")
+    nh3_thresh = st.slider("NH₃ max (mM)",             1.0, 20.0, 5.0,  0.5)
+    glc_thresh = st.slider("Glucose min (mM)",          0.1,  5.0, 2.0,  0.1)
+    vcd_thresh = st.slider("Min peak VCD (×10⁶/mL)",   1.0, 50.0, 10.0, 1.0)
+    lg_thresh  = st.slider("Lactate / Glucose ratio",   0.5,  5.0, 2.0,  0.1)
+
+    st.markdown(section_divider(), unsafe_allow_html=True)
+
+    st.markdown("**🤖 Model Settings**")
     n_estimators = st.slider("Number of trees", 50, 500, 150, 50)
     use_shap     = st.checkbox("Compute SHAP values", value=True)
-    st.markdown("---")
-    st.caption("Bioprocess ML Reporter v3.0")
 
-st.markdown('<div class="main-header"><h1>🧬 Bioprocess ML Report Generator</h1><p>Upload your bioprocess data and get instant ML predictions, process flags, and AI-powered plain-English interpretation.</p></div>', unsafe_allow_html=True)
+    st.markdown(section_divider(), unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-badge">Bioprocess ML Reporter &nbsp;<span>v3.0</span></div>', unsafe_allow_html=True)
 
 # =============================================================================
-# AI HELPER — Gemini, fully internal, no user input needed
+# HERO HEADER
+# =============================================================================
+st.markdown("""
+<div class="hero-header">
+    <h1>🧬 Bioprocess ML Report Generator</h1>
+    <p>Upload your bioprocess data and receive instant ML predictions, process flags, and AI-powered plain-English interpretation — all in one place.</p>
+</div>
+""", unsafe_allow_html=True)
+
+
+# =============================================================================
+# AI HELPER — Gemini
 # =============================================================================
 def call_ai(prompt):
     try:
@@ -115,41 +516,34 @@ Always use plain English. Avoid jargon. If you must use a technical term, briefl
 Keep responses concise — 2-4 sentences unless told otherwise.
 """
 
-    # 1. Overall run summary
     st.session_state.ai_summary = ai_interpret(context + """
 Write a plain-English run summary (3-4 sentences) for a scientist reviewing this bioprocess run.
 Describe what happened, whether the outcome was good or bad, and the single most important thing to know about this run.
 Do not use bullet points.""")
 
-    # 2. Flag explanations
     flag_prompt = context + f"""
 For each of these process warnings, write one plain-English sentence explaining what it means in practice and why it matters:
 {chr(10).join(['- ' + m for s, m in flags])}
 Format as a simple list with one line per flag, starting with the flag text then a colon then the explanation."""
     st.session_state.ai_flags = ai_interpret(flag_prompt)
 
-    # 3. Titer curve interpretation
     st.session_state.ai_titer = ai_interpret(context + """
 In 2 sentences, explain what the titer curve shape tells us about this run.
 What does the gap between actual and predicted values indicate? Keep it simple enough for a non-specialist.""")
 
-    # 4. Feature importance interpretation
     st.session_state.ai_feat = ai_interpret(context + f"""
 The top 3 most important features for predicting {target_col} are: {', '.join([f[0] for f in top_feats])}.
 In 2-3 sentences, explain in plain English what this means — why these features matter biologically and what a scientist should watch most closely in future runs.""")
 
-    # 5. Correlation heatmap interpretation
     st.session_state.ai_corr = ai_interpret(context + """
 In 2 sentences, explain to a non-specialist what the correlation heatmap is showing and what action they should take based on it.
 For example, if two features are highly correlated, what does that mean practically?""")
 
-    # 6. SHAP interpretation
     if use_shap:
         st.session_state.ai_shap = ai_interpret(context + f"""
 SHAP values show which features push predictions up or down for individual samples (not just globally).
 In 2 sentences, explain what SHAP adds beyond feature importance and why it is useful for understanding {target_col} prediction in bioprocess runs.""")
 
-    # 7. Next run recommendation
     st.session_state.ai_next_run = ai_interpret(context + f"""
 Based on this run's results and warnings, write 3 specific, actionable recommendations for the scientist's next run.
 Format as a numbered list. Be concrete — mention specific features, thresholds, or timing if relevant.
@@ -220,7 +614,7 @@ def generate_flags(df, target_col, time_col, nh3_thresh, glc_thresh, vcd_thresh,
         ratio = df['Lactate (mM)'] / (df['Glucose (mM)'] + 1e-9)
         max_ratio = ratio.max()
         if max_ratio > lg_thresh:
-            flags.append(("warn", f"Lactate/Glucose ratio exceeded {lg_thresh:.1f} (max: {max_ratio:.2f}) - possible metabolic shift"))
+            flags.append(("warn", f"Lactate/Glucose ratio exceeded {lg_thresh:.1f} (max: {max_ratio:.2f}) — possible metabolic shift"))
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
     for col in numeric_cols:
         if col in [target_col, time_col]:
@@ -231,17 +625,17 @@ def generate_flags(df, target_col, time_col, nh3_thresh, glc_thresh, vcd_thresh,
             day = df.loc[diff.idxmax(), time_col] if time_col in df.columns else "?"
             flags.append(("warn", f"Spike detected in '{col}' near {time_col}={day}"))
     if df[target_col].is_monotonic_increasing:
-        flags.append(("ok", f"Target '{target_col}' increases monotonically - healthy profile"))
+        flags.append(("ok", f"Target '{target_col}' increases monotonically — healthy profile"))
     final = df[target_col].iloc[-1]
     peak  = df[target_col].max()
     if peak > 0 and final < 0.5 * peak:
-        flags.append(("warn", f"Final {target_col} ({final:.2f}) is less than 50% of peak ({peak:.2f}) - possible crash or dilution"))
+        flags.append(("warn", f"Final {target_col} ({final:.2f}) is less than 50% of peak ({peak:.2f}) — possible crash or dilution"))
     missing = df.isnull().sum()
     bad_cols = missing[missing > 0]
     if len(bad_cols) > 0:
         flags.append(("warn", f"Missing values in: {', '.join(bad_cols.index.tolist()[:5])}"))
     if not flags:
-        flags.append(("ok", "No anomalies detected - run profile looks healthy!"))
+        flags.append(("ok", "No anomalies detected — run profile looks healthy!"))
     return flags
 
 
@@ -267,7 +661,17 @@ def train_models(X_vals, X_cols, y_vals, y_name, groups_list, n_estimators):
 
 def show_insight(text, icon="💡"):
     if text:
-        st.info(f"{icon} {text}")
+        st.markdown(ai_insight_box(f"{icon}&ensp;{text}"), unsafe_allow_html=True)
+
+
+def render_flags_html(flags):
+    """Render process flags as styled HTML blocks."""
+    html = ""
+    for sev, msg in flags:
+        cls = "flag-warn" if sev == "warn" else "flag-ok"
+        prefix = "⚠️" if sev == "warn" else "✅"
+        html += f'<div class="{cls}">{prefix}&ensp;{msg}</div>'
+    return html
 
 
 def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
@@ -379,7 +783,7 @@ def make_pdf(df, target_col, time_col, rf, xgb, y, rf_pred, xgb_pred, flags,
 
 def make_excel(df, target_col, time_col, rf, xgb, feature_cols, y, rf_pred, xgb_pred, flags, timestamp):
     wb = openpyxl.Workbook()
-    header_fill = PatternFill("solid", fgColor="1a3a4a")
+    header_fill = PatternFill("solid", fgColor="0D1B2A")
     header_font = Font(color="FFFFFF", bold=True)
 
     def style_header(ws, ncols):
@@ -442,12 +846,12 @@ def make_excel(df, target_col, time_col, rf, xgb, feature_cols, y, rf_pred, xgb_
 # TABS
 # =============================================================================
 tab_main, tab_harvest, tab_feedopt, tab_scaleup, tab_earlywarning, tab_cellline = st.tabs([
-    "📊 Main Analysis",
-    "🌾 Harvest Timing",
-    "🧪 Feed Optimizer",
-    "📐 Scale-Up Predictor",
-    "⚡ Early Warning",
-    "🔬 Cell Line Comparison"
+    "📊  Main Analysis",
+    "🌾  Harvest Timing",
+    "🧪  Feed Optimizer",
+    "📐  Scale-Up Predictor",
+    "⚡  Early Warning",
+    "🔬  Cell Line Comparison",
 ])
 
 # =============================================================================
@@ -455,7 +859,7 @@ tab_main, tab_harvest, tab_feedopt, tab_scaleup, tab_earlywarning, tab_cellline 
 # =============================================================================
 with tab_main:
 
-    st.markdown('<div class="step-card"><strong>📁 Step 1 — Upload Your Data</strong></div>', unsafe_allow_html=True)
+    st.markdown(step_card("1", "Upload Your Data"), unsafe_allow_html=True)
     uploaded = st.file_uploader("Upload CSV or Excel file", type=["csv","xlsx"], key="main_upload")
 
     if uploaded:
@@ -468,8 +872,8 @@ with tab_main:
                 sheet = st.selectbox("Select sheet", xl.sheet_names)
                 df = load_excel(file_bytes, sheet)
             st.session_state.df = df
-            st.success(f"Loaded {len(df)} rows x {len(df.columns)} columns")
-            with st.expander("📋 Preview Data"):
+            st.success(f"✓ Loaded **{len(df)}** rows × **{len(df.columns)}** columns")
+            with st.expander("📋 Preview Data", expanded=False):
                 st.dataframe(df.head(15), use_container_width=True)
         except Exception as e:
             st.error(f"Error loading file: {e}")
@@ -479,7 +883,7 @@ with tab_main:
         all_cols     = df.columns.tolist()
         numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
 
-        st.markdown('<div class="step-card"><strong>⚙️ Step 2 — Map Your Columns</strong></div>', unsafe_allow_html=True)
+        st.markdown(step_card("2", "Map Your Columns"), unsafe_allow_html=True)
         auto_target, auto_time, auto_group = smart_detect(all_cols)
 
         col1, col2, col3 = st.columns(3)
@@ -491,11 +895,11 @@ with tab_main:
                                      index=all_cols.index(auto_time) if auto_time in all_cols else 0)
         with col3:
             group_options = ["None"] + all_cols
-            group_sel = st.selectbox("🔬 Experiment/Run ID (optional)", group_options,
+            group_sel = st.selectbox("🔬 Experiment / Run ID", group_options,
                                       index=group_options.index(auto_group) if auto_group in group_options else 0)
             group_col = None if group_sel == "None" else group_sel
 
-        st.subheader("Select Feature Columns")
+        st.markdown(sub_header("🧩", "Select Feature Columns"), unsafe_allow_html=True)
         exclude = {target_col, time_col, group_col}
         default_features = [c for c in numeric_cols if c not in exclude]
         feature_cols = st.multiselect("Features", default_features, default=default_features)
@@ -506,9 +910,9 @@ with tab_main:
         st.session_state.group_col    = group_col
 
     if st.session_state.feature_cols:
-        st.markdown('<div class="step-card"><strong>🤖 Step 3 — Train Models & Generate Insights</strong></div>', unsafe_allow_html=True)
+        st.markdown(step_card("3", "Train Models & Generate Insights"), unsafe_allow_html=True)
 
-        if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+        if st.button("🚀  Run Analysis", type="primary", use_container_width=True):
             df           = st.session_state.df
             target_col   = st.session_state.target_col
             time_col     = st.session_state.time_col
@@ -521,13 +925,13 @@ with tab_main:
             df_plot = df.loc[df_model.index]
 
             if len(X) < 6:
-                st.error(f"Only {len(X)} usable rows - need at least 6.")
+                st.error(f"Only {len(X)} usable rows — need at least 6.")
                 st.stop()
 
             groups = df_plot[group_col].astype(str) if group_col else None
-            st.info(f"Training on {len(X)} rows with {len(feature_cols)} features")
+            st.info(f"Training on **{len(X)}** rows with **{len(feature_cols)}** features …")
 
-            with st.spinner("Training models..."):
+            with st.spinner("Training models …"):
                 rf, xgb, rf_pred, xgb_pred = train_models(
                     X.values.tolist(), list(X.columns),
                     y.tolist(), y.name,
@@ -536,7 +940,7 @@ with tab_main:
                 )
 
             if use_shap:
-                with st.spinner("Computing SHAP values..."):
+                with st.spinner("Computing SHAP values …"):
                     shap_values = shap.TreeExplainer(rf).shap_values(X)
                 st.session_state.shap_values = shap_values
 
@@ -551,12 +955,13 @@ with tab_main:
             st.session_state.df_plot     = df_plot
             st.session_state.flags       = flags
 
-            with st.spinner("Generating AI interpretations..."):
+            with st.spinner("Generating AI interpretations …"):
                 run_all_ai_interpretations(df_plot, target_col, time_col, feature_cols,
                                            rf, y, rf_pred, xgb_pred, flags, group_col)
 
-            st.success("Analysis and AI interpretations complete!")
+            st.success("✓ Analysis and AI interpretations complete!")
 
+    # ── RESULTS ───────────────────────────────────────────────────────────
     if st.session_state.rf is not None:
         rf           = st.session_state.rf
         xgb          = st.session_state.xgb
@@ -572,40 +977,36 @@ with tab_main:
         group_col    = st.session_state.group_col
         feature_cols = st.session_state.feature_cols
 
-        st.markdown('<div class="step-card"><strong>📊 Step 4 — Results</strong></div>', unsafe_allow_html=True)
+        st.markdown(step_card("4", "Results"), unsafe_allow_html=True)
 
-        # AI Run Summary — shown first, prominent
+        # AI Run Summary
         if st.session_state.get('ai_error'):
             st.warning(f"AI interpretation unavailable: {st.session_state['ai_error']}")
         if st.session_state.ai_summary:
-            st.subheader("📝 AI Run Summary")
-            st.info(st.session_state.ai_summary)
+            st.markdown(sub_header("📝", "AI Run Summary"), unsafe_allow_html=True)
+            show_insight(st.session_state.ai_summary, "📝")
 
         # Metrics
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("RF R2 (CV)",  f"{r2_score(y, rf_pred):.4f}")
-        c2.metric("XGB R2 (CV)", f"{r2_score(y, xgb_pred):.4f}")
-        c3.metric("RF MAE",      f"{mean_absolute_error(y, rf_pred):.4f}")
-        c4.metric("XGB MAE",     f"{mean_absolute_error(y, xgb_pred):.4f}")
+        c1.metric("RF R²  (CV)",  f"{r2_score(y, rf_pred):.4f}")
+        c2.metric("XGB R²  (CV)", f"{r2_score(y, xgb_pred):.4f}")
+        c3.metric("RF MAE",       f"{mean_absolute_error(y, rf_pred):.4f}")
+        c4.metric("XGB MAE",      f"{mean_absolute_error(y, xgb_pred):.4f}")
 
-        # Process flags with AI explanations
-        st.subheader("🚩 Process Flags")
-        for sev, msg in flags:
-            if sev == "warn":
-                st.warning(f"⚠️ {msg}")
-            else:
-                st.success(f"✅ {msg}")
+        # Process flags
+        st.markdown(sub_header("🚩", "Process Flags"), unsafe_allow_html=True)
+        st.markdown(render_flags_html(flags), unsafe_allow_html=True)
         if st.session_state.ai_flags:
             with st.expander("💬 What do these flags mean in plain English?", expanded=True):
                 st.write(st.session_state.ai_flags)
 
         titer_path = feat_path = cmp_path = shap_path = corr_path = None
 
-        # Titer curve
-        st.subheader(f"📈 {target_col} Over Time")
+        # ── Titer curve ──────────────────────────────────────────────────
+        st.markdown(sub_header("📈", f"{target_col} Over Time"), unsafe_allow_html=True)
         if group_col and group_col in df_plot.columns:
             all_batches = sorted(df_plot[group_col].astype(str).unique().tolist())
-            selected_batches = st.multiselect("Filter by batch/run", all_batches, default=all_batches, key="batch_filter")
+            selected_batches = st.multiselect("Filter by batch / run", all_batches, default=all_batches, key="batch_filter")
             mask = df_plot[group_col].astype(str).isin(selected_batches) if selected_batches else pd.Series([True]*len(df_plot), index=df_plot.index)
         else:
             mask = pd.Series([True]*len(df_plot), index=df_plot.index)
@@ -615,101 +1016,129 @@ with tab_main:
         rf_f  = rf_pred[mask.values]
         xgb_f = xgb_pred[mask.values]
 
-        fig1, ax1 = plt.subplots(figsize=(12, 4))
-        tab_colors = plt.cm.tab10.colors
+        fig1, ax1 = plt.subplots(figsize=(12, 4.5))
         if group_col and group_col in df_f.columns:
             from matplotlib.lines import Line2D
             for i, batch in enumerate(df_f[group_col].astype(str).unique()):
+                c = PLOT_COLORS[i % len(PLOT_COLORS)]
                 b_idx = df_f[df_f[group_col].astype(str)==batch].index
                 bm = df_plot.index.isin(b_idx)
-                ax1.plot(df_f.loc[b_idx, time_col], y[bm],       'o-',  color=tab_colors[i%10], label=str(batch))
-                ax1.plot(df_f.loc[b_idx, time_col], rf_pred[bm], 's--', color=tab_colors[i%10], alpha=0.55)
-                ax1.plot(df_f.loc[b_idx, time_col], xgb_pred[bm],'^:',  color=tab_colors[i%10], alpha=0.35)
-            style_legend = [Line2D([0],[0],color='gray',marker='o',ls='-',label='Actual'),
-                            Line2D([0],[0],color='gray',marker='s',ls='--',label='RF Pred',alpha=0.6),
-                            Line2D([0],[0],color='gray',marker='^',ls=':',label='XGB Pred',alpha=0.4)]
-            l1 = ax1.legend(handles=style_legend, loc='upper left', fontsize=8, title='Line Style')
+                ax1.plot(df_f.loc[b_idx, time_col], y[bm],       'o-',  color=c, label=str(batch), markersize=5, lw=1.8)
+                ax1.plot(df_f.loc[b_idx, time_col], rf_pred[bm], 's--', color=c, alpha=0.45, markersize=4, lw=1.2)
+                ax1.plot(df_f.loc[b_idx, time_col], xgb_pred[bm],'^:',  color=c, alpha=0.3,  markersize=4, lw=1)
+            style_legend = [
+                Line2D([0],[0], color=_PALETTE["text_dim"], marker='o', ls='-',  label='Actual',   lw=1.5, markersize=4),
+                Line2D([0],[0], color=_PALETTE["text_dim"], marker='s', ls='--', label='RF Pred',   lw=1.2, markersize=4, alpha=0.6),
+                Line2D([0],[0], color=_PALETTE["text_dim"], marker='^', ls=':',  label='XGB Pred',  lw=1,   markersize=4, alpha=0.4),
+            ]
+            l1 = ax1.legend(handles=style_legend, loc='upper left', fontsize=8, title='Line Style', title_fontsize=8)
             ax1.add_artist(l1)
-            ax1.legend(loc='lower right', fontsize=8, title='Batch/Run')
+            ax1.legend(loc='lower right', fontsize=8, title='Batch / Run', title_fontsize=8)
         else:
-            ax1.plot(df_f[time_col].values, y_f.values,'o-', label='Actual', color='steelblue')
-            ax1.plot(df_f[time_col].values, rf_f,'s--', label='RF Predicted', color='coral')
-            ax1.plot(df_f[time_col].values, xgb_f,'^:', label='XGB Predicted', color='seagreen')
+            ax1.plot(df_f[time_col].values, y_f.values,  'o-',  label='Actual',        color=PLOT_COLORS[0], markersize=5, lw=1.8)
+            ax1.plot(df_f[time_col].values, rf_f,        's--', label='RF Predicted',   color=PLOT_COLORS[2], markersize=4, lw=1.3, alpha=0.8)
+            ax1.plot(df_f[time_col].values, xgb_f,       '^:',  label='XGB Predicted',  color=PLOT_COLORS[1], markersize=4, lw=1.3, alpha=0.7)
             ax1.legend(fontsize=9)
-        ax1.set_xlabel(time_col); ax1.set_ylabel(target_col)
-        ax1.set_title(f"{target_col} - Actual vs Predicted", fontsize=13)
-        ax1.grid(True, alpha=0.3); plt.tight_layout()
+        ax1.set_xlabel(time_col)
+        ax1.set_ylabel(target_col)
+        ax1.set_title(f"{target_col} — Actual vs Predicted")
+        plt.tight_layout()
         st.pyplot(fig1, use_container_width=True)
         titer_path = tempfile.mktemp(suffix=".png")
-        fig1.savefig(titer_path, bbox_inches='tight', dpi=150); plt.close()
+        fig1.savefig(titer_path, bbox_inches='tight', dpi=150)
+        plt.close()
         show_insight(st.session_state.ai_titer, "📈")
 
+        # ── Feature importance + SHAP ────────────────────────────────────
         col_a, col_b = st.columns(2)
         fig_h = max(5, len(feature_cols) * 0.45)
 
         with col_a:
-            st.subheader("🔍 Feature Importance (RF)")
+            st.markdown(sub_header("🔍", "Feature Importance (RF)"), unsafe_allow_html=True)
             fig2, ax2 = plt.subplots(figsize=(7, fig_h))
             imp_df = pd.DataFrame({'Feature': feature_cols, 'Importance': rf.feature_importances_}).sort_values('Importance')
-            bars = ax2.barh(imp_df['Feature'], imp_df['Importance'], color='steelblue', height=0.6)
+            colors_imp = [_PALETTE["teal"] if v == imp_df['Importance'].max() else _PALETTE["primary"] for v in imp_df['Importance']]
+            bars = ax2.barh(imp_df['Feature'], imp_df['Importance'], color=colors_imp, height=0.6, edgecolor='none')
             for bar, val in zip(bars, imp_df['Importance']):
-                ax2.text(bar.get_width()+0.001, bar.get_y()+bar.get_height()/2, f'{val:.3f}', va='center', fontsize=8)
-            ax2.set_xlabel('Importance Score'); ax2.set_title('RF Feature Importance')
-            ax2.tick_params(axis='y', labelsize=9); plt.tight_layout()
+                ax2.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2,
+                         f'{val:.3f}', va='center', fontsize=8, color=_PALETTE["text_dim"])
+            ax2.set_xlabel('Importance Score')
+            ax2.set_title('RF Feature Importance')
+            ax2.tick_params(axis='y', labelsize=9)
+            plt.tight_layout()
             st.pyplot(fig2, use_container_width=True)
             feat_path = tempfile.mktemp(suffix=".png")
-            fig2.savefig(feat_path, bbox_inches='tight', dpi=150); plt.close()
+            fig2.savefig(feat_path, bbox_inches='tight', dpi=150)
+            plt.close()
             show_insight(st.session_state.ai_feat, "🔍")
 
         with col_b:
             if shap_values is not None:
-                st.subheader("🧠 SHAP Summary Plot")
+                st.markdown(sub_header("🧠", "SHAP Summary Plot"), unsafe_allow_html=True)
                 shap.summary_plot(shap_values, X_model, plot_type="bar", feature_names=feature_cols, show=False)
-                fig3 = plt.gcf(); fig3.set_size_inches(7, fig_h)
-                plt.title('SHAP Feature Impact'); plt.tight_layout()
+                fig3 = plt.gcf()
+                fig3.set_size_inches(7, fig_h)
+                fig3.set_facecolor(_PALETTE["card_bg"])
+                for ax in fig3.axes:
+                    ax.set_facecolor(_PALETTE["surface"])
+                plt.title('SHAP Feature Impact')
+                plt.tight_layout()
                 st.pyplot(fig3, use_container_width=True)
                 shap_path = tempfile.mktemp(suffix=".png")
-                fig3.savefig(shap_path, bbox_inches='tight', dpi=150); plt.close()
+                fig3.savefig(shap_path, bbox_inches='tight', dpi=150)
+                plt.close()
                 show_insight(st.session_state.ai_shap, "🧠")
             else:
                 st.info("Enable SHAP in the sidebar.")
 
-        st.subheader("🆚 Model Comparison")
-        fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(12, 4))
-        for ax, pred, name, color in [(ax4a,rf_pred,"Random Forest","coral"),(ax4b,xgb_pred,"XGBoost","seagreen")]:
-            ax.scatter(y, pred, alpha=0.7, color=color, edgecolors='white', linewidths=0.5, s=50)
+        # ── Model comparison ─────────────────────────────────────────────
+        st.markdown(sub_header("🆚", "Model Comparison"), unsafe_allow_html=True)
+        fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(12, 4.5))
+        for ax, pred, name, color in [
+            (ax4a, rf_pred,  "Random Forest", PLOT_COLORS[2]),
+            (ax4b, xgb_pred, "XGBoost",       PLOT_COLORS[1]),
+        ]:
+            ax.scatter(y, pred, alpha=0.7, color=color, edgecolors='white', linewidths=0.4, s=50, zorder=3)
             mn, mx = float(y.min()), float(y.max())
-            ax.plot([mn,mx],[mn,mx],'k--',lw=1.5,label='Perfect fit')
-            ax.set_xlabel(f'Actual {target_col}'); ax.set_ylabel(f'Predicted {target_col}')
-            ax.set_title(f'{name}  R2={r2_score(y,pred):.3f}  MAE={mean_absolute_error(y,pred):.3f}')
-            ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+            ax.plot([mn, mx], [mn, mx], '--', color=_PALETTE["text_dim"], lw=1.2, label='Perfect fit', alpha=0.6)
+            ax.set_xlabel(f'Actual {target_col}')
+            ax.set_ylabel(f'Predicted {target_col}')
+            ax.set_title(f'{name}   R²={r2_score(y, pred):.3f}   MAE={mean_absolute_error(y, pred):.3f}')
+            ax.legend(fontsize=8)
         plt.tight_layout()
         st.pyplot(fig4, use_container_width=True)
         cmp_path = tempfile.mktemp(suffix=".png")
-        fig4.savefig(cmp_path, bbox_inches='tight', dpi=150); plt.close()
+        fig4.savefig(cmp_path, bbox_inches='tight', dpi=150)
+        plt.close()
 
-        st.subheader("🔗 Correlation Heatmap")
+        # ── Correlation heatmap ──────────────────────────────────────────
+        st.markdown(sub_header("🔗", "Correlation Heatmap"), unsafe_allow_html=True)
         corr_cols = feature_cols + [target_col]
         corr_df   = df_plot[corr_cols].select_dtypes(include=np.number).corr()
-        fig5_h = max(6, len(corr_cols)*0.6)
-        fig5_w = min(14, len(corr_cols)*0.9+2)
+        fig5_h = max(6, len(corr_cols) * 0.6)
+        fig5_w = min(14, len(corr_cols) * 0.9 + 2)
         fig5, ax5 = plt.subplots(figsize=(fig5_w, fig5_h))
         mask_tri = np.triu(np.ones_like(corr_df, dtype=bool))
-        sns.heatmap(corr_df, mask=mask_tri, annot=True, fmt=".2f", cmap="RdYlBu_r", center=0,
-                    ax=ax5, linewidths=0.5, annot_kws={"size":8}, cbar_kws={"shrink":0.8})
-        ax5.set_title("Feature Correlation Matrix", fontsize=13); plt.tight_layout()
+        cmap_custom = sns.diverging_palette(220, 20, s=70, l=55, as_cmap=True)
+        sns.heatmap(corr_df, mask=mask_tri, annot=True, fmt=".2f", cmap=cmap_custom, center=0,
+                    ax=ax5, linewidths=0.3, linecolor=_PALETTE["border"],
+                    annot_kws={"size": 8, "color": _PALETTE["text"]},
+                    cbar_kws={"shrink": 0.8})
+        ax5.set_title("Feature Correlation Matrix")
+        plt.tight_layout()
         st.pyplot(fig5, use_container_width=True)
         corr_path = tempfile.mktemp(suffix=".png")
-        fig5.savefig(corr_path, bbox_inches='tight', dpi=150); plt.close()
+        fig5.savefig(corr_path, bbox_inches='tight', dpi=150)
+        plt.close()
         show_insight(st.session_state.ai_corr, "🔗")
 
         # Next run recommendations
         if st.session_state.ai_next_run:
-            st.subheader("🎯 Recommendations for Your Next Run")
-            st.info(st.session_state.ai_next_run)
+            st.markdown(sub_header("🎯", "Recommendations for Your Next Run"), unsafe_allow_html=True)
+            show_insight(st.session_state.ai_next_run, "🎯")
 
-        # Downloads
-        st.markdown('<div class="step-card"><strong>📥 Step 5 — Download Reports</strong></div>', unsafe_allow_html=True)
+        # ── Downloads ────────────────────────────────────────────────────
+        st.markdown(step_card("5", "Download Reports"), unsafe_allow_html=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         ts_label  = datetime.now().strftime("%Y-%m-%d %H:%M")
         d1, d2 = st.columns(2)
@@ -722,7 +1151,7 @@ with tab_main:
                     st.session_state.ai_summary, st.session_state.ai_flags,
                     st.session_state.ai_next_run, ts_label
                 )
-                st.download_button("📄 Download PDF Report", data=pdf_bytes,
+                st.download_button("📄  Download PDF Report", data=pdf_bytes,
                                    file_name=f"bioprocess_report_{timestamp}.pdf",
                                    mime="application/pdf", use_container_width=True)
             except Exception as e:
@@ -731,25 +1160,30 @@ with tab_main:
             try:
                 excel_bytes = make_excel(df_plot, target_col, time_col, rf, xgb,
                                          feature_cols, y, rf_pred, xgb_pred, flags, ts_label)
-                st.download_button("📊 Download Excel Report", data=excel_bytes,
+                st.download_button("📊  Download Excel Report", data=excel_bytes,
                                    file_name=f"bioprocess_report_{timestamp}.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True)
             except Exception as e:
                 st.error(f"Excel error: {e}")
     else:
-        st.info("👆 Upload a file and complete Steps 1-3 to see results.")
+        st.markdown("""
+        <div style="text-align:center; padding: 3rem 1rem; color: var(--text-dim);">
+            <div style="font-size: 2.5rem; margin-bottom: .5rem;">📁</div>
+            <div style="font-size: 1rem; font-weight: 500;">Upload a file and complete Steps 1–3 to see results</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # =============================================================================
 # TAB 2 — HARVEST TIMING
 # =============================================================================
 with tab_harvest:
-    st.markdown("## 🌾 Harvest Timing Predictor")
-    st.markdown("Predicts the optimal harvest day based on your historical run data.")
+    st.markdown(sub_header("🌾", "Harvest Timing Predictor"), unsafe_allow_html=True)
+    st.caption("Predicts the optimal harvest day based on your historical run data.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first.")
+        st.info("Run the **Main Analysis** first.")
     else:
         rf           = st.session_state.rf
         df_plot      = st.session_state.df_plot
@@ -782,37 +1216,36 @@ with tab_harvest:
             col2.metric("Predicted Peak Titer",          f"{best_pred:.2f}")
             col3.metric("Current Run End Day",            f"{max_day:.0f}")
 
-            fig_h, ax_h = plt.subplots(figsize=(12, 4))
-            ax_h.plot(hist_times, st.session_state.y.values,'o-', color='steelblue', label='Actual (historical)', zorder=3)
-            ax_h.plot(hist_times, hist_preds,'s--', color='coral', label='RF Predicted (historical)', alpha=0.7)
-            ax_h.plot(time_vals, sim_preds, '^:', color='seagreen', label='Simulated future', alpha=0.8)
-            ax_h.axvline(best_day, color='gold', lw=2, ls='--', label=f'Optimal harvest: Day {best_day:.0f}')
-            ax_h.axvline(max_day,  color='gray', lw=1, ls=':', alpha=0.6, label='Current run end')
-            ax_h.set_xlabel(time_col); ax_h.set_ylabel(target_col)
-            ax_h.set_title("Harvest Timing Prediction"); ax_h.legend(fontsize=8); ax_h.grid(True, alpha=0.3)
+            fig_h, ax_h = plt.subplots(figsize=(12, 4.5))
+            ax_h.plot(hist_times, st.session_state.y.values, 'o-', color=PLOT_COLORS[0], label='Actual (historical)', zorder=3, markersize=5, lw=1.8)
+            ax_h.plot(hist_times, hist_preds, 's--', color=PLOT_COLORS[2], label='RF Predicted (historical)', alpha=0.7, markersize=4, lw=1.3)
+            ax_h.plot(time_vals, sim_preds, '^:', color=PLOT_COLORS[1], label='Simulated future', alpha=0.8, markersize=5, lw=1.3)
+            ax_h.axvline(best_day, color=_PALETTE["amber"], lw=2, ls='--', label=f'Optimal harvest: Day {best_day:.0f}', zorder=4)
+            ax_h.axvline(max_day,  color=_PALETTE["text_dim"], lw=1, ls=':', alpha=0.6, label='Current run end')
+            ax_h.set_xlabel(time_col)
+            ax_h.set_ylabel(target_col)
+            ax_h.set_title("Harvest Timing Prediction")
+            ax_h.legend(fontsize=8)
             plt.tight_layout()
             st.pyplot(fig_h, use_container_width=True)
             plt.close()
 
-            # Auto AI interpretation
             harvest_insight = ai_interpret(f"""You are a bioprocess scientist. The model predicts optimal harvest at day {best_day:.0f} with predicted titer {best_pred:.2f}. The run currently ends at day {max_day:.0f}.
 In 2 sentences, give a plain-English harvest recommendation. Should they extend the run? What is the risk of waiting?""")
             show_insight(harvest_insight, "🌾")
 
 
 # =============================================================================
-# TAB 3 — FEED OPTIMIZER (constrained, biologically-aware)
+# TAB 3 — FEED OPTIMIZER
 # =============================================================================
 with tab_feedopt:
-    st.markdown("## 🧪 Feed Strategy Optimizer")
-    st.markdown("""
-Simulate different feed conditions and see the predicted impact on titer.
-Sliders are constrained to **mean ± 2 standard deviations** — the realistic operating range in your data.
-A **reliability score** tells you how trustworthy the prediction is based on how far your inputs are from real observed data.
-    """)
+    st.markdown(sub_header("🧪", "Feed Strategy Optimizer"), unsafe_allow_html=True)
+    st.caption("""Simulate different feed conditions and see the predicted impact on titer.
+Sliders are constrained to **mean ± 2 std** — the realistic operating range in your data.
+A **reliability score** tells you how trustworthy the prediction is.""")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first.")
+        st.info("Run the **Main Analysis** first.")
     else:
         rf            = st.session_state.rf
         df_plot       = st.session_state.df_plot
@@ -835,25 +1268,19 @@ A **reliability score** tells you how trustworthy the prediction is based on how
                     lo, hi = feat_mins[feat], feat_maxs[feat]
                 return float(lo), float(hi)
 
-            st.markdown("### Step 1 — Choose primary feature and adjust its value")
-            anchor_feat = st.selectbox(
-                "Primary feature to adjust",
-                numeric_feats, key="anchor_feat"
-            )
+            st.markdown("**Step 1 — Choose primary feature and adjust its value**")
+            anchor_feat = st.selectbox("Primary feature to adjust", numeric_feats, key="anchor_feat")
 
             lo_a, hi_a = constrained_bounds(anchor_feat)
             step_a = (hi_a - lo_a) / 100 if (hi_a - lo_a) > 0 else 0.01
             anchor_val = st.slider(
-                f"{anchor_feat}",
-                lo_a, hi_a,
+                f"{anchor_feat}", lo_a, hi_a,
                 float(np.clip(feat_means[anchor_feat], lo_a, hi_a)),
                 step_a, key="wi_anchor_val"
             )
 
-            # Compute how many std devs the anchor moved
             anchor_delta_std = (anchor_val - feat_means[anchor_feat]) / feat_stds[anchor_feat]
 
-            # Auto-calculate correlated feature values
             auto_vals = {}
             for feat in numeric_feats:
                 if feat == anchor_feat:
@@ -864,9 +1291,8 @@ A **reliability score** tells you how trustworthy the prediction is based on how
                 lo2, hi2  = constrained_bounds(feat)
                 auto_vals[feat] = float(np.clip(suggested, lo2, hi2))
 
-            # Show auto-adjusted values and allow manual override
-            st.markdown("### Step 2 — Review auto-adjusted features (override if needed)")
-            st.caption("Features with correlation > 0.4 to your primary feature are automatically adjusted. You can override any value below.")
+            st.markdown("**Step 2 — Review auto-adjusted features (override if needed)**")
+            st.caption("Features with correlation > 0.4 to your primary feature are automatically adjusted.")
 
             override_vals = {}
             cols = st.columns(min(3, len(numeric_feats)))
@@ -881,9 +1307,9 @@ A **reliability score** tells you how trustworthy the prediction is based on how
 
                 with cols[col_idx % len(cols)]:
                     if abs(corr) > 0.4:
-                        direction = "up" if corr > 0 else "down"
+                        direction = "↑" if corr > 0 else "↓"
                         st.markdown(f"**{feat}**")
-                        st.caption(f"Auto-adjusted (r={corr:.2f}, shifted {direction}): **{auto_vals[feat]:.3f}**")
+                        st.caption(f"Auto-adjusted (r={corr:.2f} {direction}): **{auto_vals[feat]:.3f}**")
                     else:
                         st.markdown(f"**{feat}**")
                         st.caption(f"Not correlated with {anchor_feat}")
@@ -898,7 +1324,6 @@ A **reliability score** tells you how trustworthy the prediction is based on how
                     )
                 col_idx += 1
 
-            # Build final input using overrides
             final_vals = {f: override_vals[f] for f in numeric_feats}
             input_row  = pd.DataFrame([[final_vals[f] for f in numeric_feats]], columns=numeric_feats)
             valid_cols = [c for c in feature_cols if c in input_row.columns]
@@ -908,7 +1333,6 @@ A **reliability score** tells you how trustworthy the prediction is based on how
             baseline_pred = rf.predict(baseline_row[valid_cols])[0]
             delta         = whatif_pred - baseline_pred
 
-            # Reliability score — exponential decay based on normalised distance to nearest training point
             X_train   = df_plot[numeric_feats].dropna()
             X_norm    = (X_train - X_train.mean()) / (X_train.std() + 1e-9)
             in_norm   = pd.DataFrame(
@@ -919,11 +1343,10 @@ A **reliability score** tells you how trustworthy the prediction is based on how
             distances   = np.sqrt(((X_norm.values - in_norm.values) ** 2).sum(axis=1))
             min_dist    = float(distances.min())
             median_dist = float(np.median(distances))
-            # Reliability: 100% at distance=0, decays toward 0 as distance grows past the median
             reliability = float(100 * np.exp(-2.0 * min_dist / (median_dist + 1e-9)))
             reliability = min(100.0, max(0.0, reliability))
 
-            st.markdown("---")
+            st.markdown(section_divider(), unsafe_allow_html=True)
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Predicted Titer",             f"{whatif_pred:.2f}")
             c2.metric("Baseline (mean conditions)",  f"{baseline_pred:.2f}")
@@ -931,13 +1354,12 @@ A **reliability score** tells you how trustworthy the prediction is based on how
             c4.metric("Prediction Reliability",      f"{reliability:.0f}%")
 
             if reliability < 40:
-                st.error(f"⚠️ Low reliability ({reliability:.0f}%) — this combination is far outside observed data. The prediction is likely inaccurate. Move sliders closer to the mean values.")
+                st.markdown(f'<div class="flag-warn">⚠️ Low reliability ({reliability:.0f}%) — this combination is far outside observed data. Move sliders closer to mean values.</div>', unsafe_allow_html=True)
             elif reliability < 70:
-                st.warning(f"⚠️ Moderate reliability ({reliability:.0f}%) — this combination is somewhat outside typical ranges. Treat the prediction with caution.")
+                st.markdown(f'<div class="warning-box">⚠️ Moderate reliability ({reliability:.0f}%) — this combination is somewhat outside typical ranges. Treat with caution.</div>', unsafe_allow_html=True)
             else:
-                st.success(f"✅ High reliability ({reliability:.0f}%) — this input is within the observed data range. The prediction is trustworthy.")
+                st.markdown(f'<div class="flag-ok">✅ High reliability ({reliability:.0f}%) — input is within observed data range. Prediction is trustworthy.</div>', unsafe_allow_html=True)
 
-            # Expander explaining auto-adjustments
             correlated = {f: corr_matrix.loc[anchor_feat, f] for f in numeric_feats
                           if f != anchor_feat and abs(corr_matrix.loc[anchor_feat, f]) > 0.4}
             if correlated:
@@ -946,11 +1368,10 @@ A **reliability score** tells you how trustworthy the prediction is based on how
                     for feat, corr in sorted(correlated.items(), key=lambda x: abs(x[1]), reverse=True):
                         direction = "increases" if corr > 0 else "decreases"
                         st.write(f"- **{feat}**: r = {corr:.2f} — tends to {direction} when {anchor_feat} changes")
-                    st.write("You can override any of these values using the number inputs above.")
 
-            # Sensitivity chart — constrained range only
-            st.subheader("Feature Sensitivity (realistic operating range)")
-            st.caption("How much titer changes as each feature is swept from its lower to upper operating bound, all others held at mean.")
+            # Sensitivity chart
+            st.markdown(sub_header("📊", "Feature Sensitivity (realistic operating range)"), unsafe_allow_html=True)
+            st.caption("How much titer changes as each feature is swept across its operating range.")
             sensitivity = {}
             for feat in numeric_feats:
                 lo2, hi2 = constrained_bounds(feat)
@@ -964,21 +1385,21 @@ A **reliability score** tells you how trustworthy the prediction is based on how
 
             sens_df = pd.DataFrame(list(sensitivity.items()), columns=["Feature","Sensitivity"]).sort_values("Sensitivity")
             top_feat_color = sens_df["Feature"].iloc[-1]
-            bar_colors = ["#ef4444" if f == top_feat_color else "#0d9488" for f in sens_df["Feature"]]
+            bar_colors = [_PALETTE["coral"] if f == top_feat_color else _PALETTE["teal"] for f in sens_df["Feature"]]
             fig_wi, ax_wi = plt.subplots(figsize=(8, max(4, len(numeric_feats) * 0.45)))
-            bars = ax_wi.barh(sens_df["Feature"], sens_df["Sensitivity"], color=bar_colors, height=0.6)
+            bars = ax_wi.barh(sens_df["Feature"], sens_df["Sensitivity"], color=bar_colors, height=0.6, edgecolor='none')
             for bar, val in zip(bars, sens_df["Sensitivity"]):
                 ax_wi.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
-                           f"{val:.2f}", va="center", fontsize=8)
+                           f"{val:.2f}", va="center", fontsize=8, color=_PALETTE["text_dim"])
             ax_wi.set_xlabel(f"Predicted {target_col} range (constrained sweep)")
-            ax_wi.set_title("Feature Sensitivity — realistic operating range only")
+            ax_wi.set_title("Feature Sensitivity — realistic operating range")
             ax_wi.tick_params(axis="y", labelsize=9)
             plt.tight_layout()
             st.pyplot(fig_wi, use_container_width=True)
             plt.close()
 
-            # Response curve for primary feature
-            st.subheader(f"Titer Response Curve — {anchor_feat}")
+            # Response curve
+            st.markdown(sub_header("📉", f"Titer Response Curve — {anchor_feat}"), unsafe_allow_html=True)
             sweep_anchor = np.linspace(lo_a, hi_a, 50)
             preds_curve  = []
             for val in sweep_anchor:
@@ -994,14 +1415,15 @@ A **reliability score** tells you how trustworthy the prediction is based on how
                     row[feat2] = float(np.clip(s2, l2, h2))
                 preds_curve.append(rf.predict(row[valid_cols])[0])
 
-            fig_c, ax_c = plt.subplots(figsize=(10, 3))
-            ax_c.plot(sweep_anchor, preds_curve, color="steelblue", lw=2)
-            ax_c.axvline(anchor_val, color="coral", ls="--", lw=1.5, label=f"Current: {anchor_val:.2f}")
-            ax_c.axvline(feat_means[anchor_feat], color="gray", ls=":", lw=1, label=f"Mean: {feat_means[anchor_feat]:.2f}")
-            ax_c.fill_between(sweep_anchor, preds_curve, alpha=0.1, color="steelblue")
-            ax_c.set_xlabel(anchor_feat); ax_c.set_ylabel(f"Predicted {target_col}")
+            fig_c, ax_c = plt.subplots(figsize=(10, 3.5))
+            ax_c.plot(sweep_anchor, preds_curve, color=PLOT_COLORS[0], lw=2.2)
+            ax_c.axvline(anchor_val, color=PLOT_COLORS[2], ls="--", lw=1.5, label=f"Current: {anchor_val:.2f}")
+            ax_c.axvline(feat_means[anchor_feat], color=_PALETTE["text_dim"], ls=":", lw=1, label=f"Mean: {feat_means[anchor_feat]:.2f}")
+            ax_c.fill_between(sweep_anchor, preds_curve, alpha=0.08, color=PLOT_COLORS[0])
+            ax_c.set_xlabel(anchor_feat)
+            ax_c.set_ylabel(f"Predicted {target_col}")
             ax_c.set_title(f"How {target_col} responds to changes in {anchor_feat}")
-            ax_c.legend(fontsize=9); ax_c.grid(True, alpha=0.3)
+            ax_c.legend(fontsize=9)
             plt.tight_layout()
             st.pyplot(fig_c, use_container_width=True)
             plt.close()
@@ -1021,16 +1443,12 @@ If reliability is below 70%, note that the prediction should be treated cautious
 # TAB 4 — SCALE-UP PREDICTOR
 # =============================================================================
 with tab_scaleup:
-    st.markdown("## 📐 Scale-Up Predictor")
-    st.markdown("""
-Estimate how your titer will change when moving from your current lab scale to a larger bioreactor.
-Enter your current and target scale parameters and the model applies established bioprocess engineering
-relationships (kLa, tip speed, P/V, mixing time) plus optional proxies for pH loop lag, dissolved CO₂/pCO₂,
-foam/antifoam, and temperature gradients (approximate, not first-principles) to predict the scaled outcome.
-    """)
+    st.markdown(sub_header("📐", "Scale-Up Predictor"), unsafe_allow_html=True)
+    st.caption("""Estimate how your titer will change when moving from your current lab scale to a larger bioreactor.
+Uses established bioprocess engineering relationships (kLa, tip speed, P/V, mixing time) plus optional proxies.""")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first.")
+        st.info("Run the **Main Analysis** first.")
     else:
         rf           = st.session_state.rf
         df_plot      = st.session_state.df_plot
@@ -1039,7 +1457,7 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
         y            = st.session_state.y
         rf_pred      = st.session_state.rf_pred
 
-        st.markdown("### Current Scale Parameters")
+        st.markdown("**Current Scale Parameters**")
         c1, c2, c3 = st.columns(3)
         with c1:
             vol_small          = st.number_input("Current working volume (L)",  0.1,  1000.0,   2.0, 0.1,  key="vol_small")
@@ -1048,7 +1466,7 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
         with c2:
             vvm_small = st.number_input("Gas flow rate (vvm)", 0.01, 1.0, 0.05, 0.005, key="vvm_small")
             kla_small = st.number_input("kLa at current scale (1/h)", 1.0, 200.0, 15.0, 0.5, key="kla_small",
-                                        help="Typical: ambr15 = 8-15/h, 2L bench bioreactor = 10-25/h")
+                                        help="Typical: ambr15 = 8-15/h, 2L bench = 10-25/h")
         with c3:
             gradient_concern = st.checkbox("Nutrient gradient concern?", value=True, key="grad_concern")
             scaleup_strategy = st.selectbox("Scale-up strategy", [
@@ -1058,8 +1476,8 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 "Constant mixing time",
             ], key="su_strategy")
 
-        st.markdown("---")
-        st.markdown("### Target Scale Parameters")
+        st.markdown(section_divider(), unsafe_allow_html=True)
+        st.markdown("**Target Scale Parameters**")
         c4, c5 = st.columns(2)
         with c4:
             vol_large          = st.number_input("Target working volume (L)",   1.0, 50000.0, 200.0, 10.0, key="vol_large")
@@ -1068,71 +1486,22 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
         with c5:
             vvm_large = st.number_input("Target gas flow rate (vvm)", 0.01, 1.0, 0.03, 0.005, key="vvm_large")
 
-        st.markdown("### Additional scale effects")
-        st.caption(
-            "pH lag, dissolved CO₂/pCO₂, foam, and temperature gradients are **engineering approximations**, not first-principles models."
-        )
+        st.markdown("**Additional Scale Effects**")
+        st.caption("pH lag, dissolved CO₂/pCO₂, foam, and temperature gradients are engineering approximations.")
         ae1, ae2 = st.columns(2)
         with ae1:
-            ph_lag_model = st.checkbox(
-                "Model pH control lag (base/acid loop slower in larger vessels)",
-                value=True,
-                key="ph_lag_model",
-            )
-            ph_loop_vs_lab = st.number_input(
-                "pH loop / dead-time vs lab (× slower); 0 = auto from volume ratio",
-                0.0,
-                15.0,
-                0.0,
-                0.1,
-                key="ph_loop_vs_lab",
-                help="Auto uses ~(V_target/V_lab)^(1/3) as a characteristic-time proxy.",
-            )
-            co2_concern = st.checkbox(
-                "Include dissolved CO₂ / pCO₂ (stripping & accumulation stress)",
-                value=True,
-                key="co2_concern",
-            )
-            dco2_vs_lab = st.number_input(
-                "dCO₂ / pCO₂ stress vs lab (×); 0 = auto from volume ratio",
-                0.0,
-                8.0,
-                0.0,
-                0.1,
-                key="dco2_vs_lab",
-                help="Replaces volume-only bins: higher values imply more dissolved CO₂ / headspace pressure concern.",
-            )
+            ph_lag_model = st.checkbox("Model pH control lag", value=True, key="ph_lag_model")
+            ph_loop_vs_lab = st.number_input("pH loop / dead-time vs lab (× slower); 0 = auto", 0.0, 15.0, 0.0, 0.1, key="ph_loop_vs_lab")
+            co2_concern = st.checkbox("Include dissolved CO₂ / pCO₂", value=True, key="co2_concern")
+            dco2_vs_lab = st.number_input("dCO₂ / pCO₂ stress vs lab (×); 0 = auto", 0.0, 8.0, 0.0, 0.1, key="dco2_vs_lab")
         with ae2:
-            foam_model = st.checkbox(
-                "Model foam / antifoam challenges at scale",
-                value=True,
-                key="foam_model",
-            )
-            foam_stress_vs_lab = st.number_input(
-                "Foam / antifoam burden vs lab (×); 0 = auto from volume ratio",
-                0.0,
-                10.0,
-                0.0,
-                0.1,
-                key="foam_stress_vs_lab",
-            )
-            temp_gradient_model = st.checkbox(
-                "Model temperature gradients (meaningful typically ≥ ~1000 L)",
-                value=True,
-                key="temp_grad_model",
-            )
-            temp_gradient_threshold_L = st.number_input(
-                "Apply temperature-gradient factor when target volume ≥ (L)",
-                100.0,
-                20000.0,
-                1000.0,
-                50.0,
-                key="temp_grad_thresh",
-            )
+            foam_model = st.checkbox("Model foam / antifoam challenges", value=True, key="foam_model")
+            foam_stress_vs_lab = st.number_input("Foam / antifoam burden vs lab (×); 0 = auto", 0.0, 10.0, 0.0, 0.1, key="foam_stress_vs_lab")
+            temp_gradient_model = st.checkbox("Model temperature gradients (≥ ~1000 L)", value=True, key="temp_grad_model")
+            temp_gradient_threshold_L = st.number_input("Temp-gradient threshold (L)", 100.0, 20000.0, 1000.0, 50.0, key="temp_grad_thresh")
 
-        if st.button("Predict Scale-Up Performance", type="primary", use_container_width=True, key="scaleup_btn"):
+        if st.button("🚀  Predict Scale-Up Performance", type="primary", use_container_width=True, key="scaleup_btn"):
 
-            # ── Engineering calculations ──────────────────────────────────
             tip_small = np.pi * impeller_dia_small * rpm_small / 60.0
             tip_large = np.pi * impeller_dia_large * rpm_large / 60.0
 
@@ -1140,21 +1509,19 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
             pv_large  = (rpm_large**3) * (impeller_dia_large**5) / max(vol_large,  1e-9)
             pv_ratio  = pv_large / max(pv_small, 1e-9)
 
-            # van't Riet correlation: kLa = C * (P/V)^0.4 * vvm^0.5
             kla_large_est = kla_small * (pv_ratio**0.4) * ((vvm_large / max(vvm_small, 1e-9))**0.5)
 
             mix_small = (vol_small**(1.0/3.0)) / max(rpm_small * impeller_dia_small**2, 1e-9)
             mix_large = (vol_large**(1.0/3.0)) / max(rpm_large * impeller_dia_large**2, 1e-9)
             mix_ratio = mix_large / max(mix_small, 1e-9)
 
-            # ── Titer impact factors ──────────────────────────────────────
             titer_factor = 1.0
             impact_notes = []
 
             kla_ratio = kla_large_est / max(kla_small, 1e-9)
             if kla_ratio < 0.5:
                 kla_factor = 0.70 + 0.30 * kla_ratio
-                impact_notes.append(("warn", "Severe kLa drop ({:.1f} vs {:.1f}/h) — significant O2 limitation expected".format(kla_large_est, kla_small)))
+                impact_notes.append(("warn", "Severe kLa drop ({:.1f} vs {:.1f}/h) — significant O₂ limitation expected".format(kla_large_est, kla_small)))
             elif kla_ratio < 0.8:
                 kla_factor = 0.85 + 0.15 * kla_ratio
                 impact_notes.append(("warn", "Moderate kLa drop ({:.1f} vs {:.1f}/h) — monitor DO closely".format(kla_large_est, kla_small)))
@@ -1181,7 +1548,7 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 ph_lag_factor = max(0.92, 1.0 - 0.03 * min(max(0.0, ph_loop_ratio - 1.0), 8.0))
                 titer_factor *= ph_lag_factor
                 if ph_loop_ratio > 1.25:
-                    impact_notes.append(("warn", "pH control lag: loop ~{:.2f}× slower vs lab — expect wider pH swings until base/acid catches up".format(ph_loop_ratio)))
+                    impact_notes.append(("warn", "pH control lag: loop ~{:.2f}× slower vs lab".format(ph_loop_ratio)))
                 else:
                     impact_notes.append(("ok", "pH loop response similar to lab ({:.2f}×)".format(ph_loop_ratio)))
             else:
@@ -1192,9 +1559,9 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 co2_factor = max(0.85, 1.0 - 0.065 * min(max(0.0, dco2_ratio - 1.0), 5.0))
                 titer_factor *= co2_factor
                 if dco2_ratio > 1.35:
-                    impact_notes.append(("warn", "Dissolved CO₂ / pCO₂ stress ~{:.2f}× lab — acidification or stripping imbalance likely; monitor".format(dco2_ratio)))
+                    impact_notes.append(("warn", "Dissolved CO₂ / pCO₂ stress ~{:.2f}× lab".format(dco2_ratio)))
                 elif dco2_ratio > 1.08:
-                    impact_notes.append(("warn", "Moderate dCO₂ / pCO₂ vs lab ({:.2f}×) — tune sweep/sparge".format(dco2_ratio)))
+                    impact_notes.append(("warn", "Moderate dCO₂ / pCO₂ vs lab ({:.2f}×)".format(dco2_ratio)))
                 else:
                     impact_notes.append(("ok", "dCO₂ / pCO₂ proxy near lab ({:.2f}×)".format(dco2_ratio)))
             else:
@@ -1205,9 +1572,9 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 foam_factor = max(0.93, 1.0 - 0.028 * min(max(0.0, foam_ratio - 1.0), 6.0))
                 titer_factor *= foam_factor
                 if foam_ratio > 1.4:
-                    impact_notes.append(("warn", "Foam / antifoam burden ~{:.2f}× lab — risk of carry-over, collapsed foam layers, or over-antifoam".format(foam_ratio)))
+                    impact_notes.append(("warn", "Foam / antifoam burden ~{:.2f}× lab".format(foam_ratio)))
                 elif foam_ratio > 1.1:
-                    impact_notes.append(("warn", "Elevated foam stress vs lab ({:.2f}×) — verify antifoam strategy".format(foam_ratio)))
+                    impact_notes.append(("warn", "Elevated foam stress vs lab ({:.2f}×)".format(foam_ratio)))
                 else:
                     impact_notes.append(("ok", "Foam / antifoam demand near lab ({:.2f}×)".format(foam_ratio)))
             else:
@@ -1216,43 +1583,42 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
             if temp_gradient_model and vol_large >= temp_gradient_threshold_L:
                 temp_factor = max(0.90, 1.0 - 0.035 * min(max(0.0, np.log10(vol_large / max(temp_gradient_threshold_L, 1e-9))), 2.5))
                 titer_factor *= temp_factor
-                impact_notes.append(("warn", "Temperature gradients at {:.0f} L (≥{:.0f} L threshold) — monitor probes and jacket tuning".format(vol_large, temp_gradient_threshold_L)))
+                impact_notes.append(("warn", "Temperature gradients at {:.0f} L".format(vol_large)))
             else:
                 temp_factor = 1.0
                 if temp_gradient_model and vol_large < temp_gradient_threshold_L:
-                    impact_notes.append(("ok", "Target volume below {:.0f} L — temperature-gradient factor not applied".format(temp_gradient_threshold_L)))
+                    impact_notes.append(("ok", "Volume below threshold — temp-gradient factor not applied".format()))
 
             if gradient_concern:
                 if mix_ratio > 5:
                     grad_factor = 0.85
-                    impact_notes.append(("warn", "Mixing time {:.1f}x longer — significant nutrient gradients expected".format(mix_ratio)))
+                    impact_notes.append(("warn", "Mixing time {:.1f}× longer — significant nutrient gradients".format(mix_ratio)))
                 elif mix_ratio > 2:
                     grad_factor = 0.93
-                    impact_notes.append(("warn", "Mixing time {:.1f}x longer — some gradients possible, adjust feed points".format(mix_ratio)))
+                    impact_notes.append(("warn", "Mixing time {:.1f}× longer — some gradients possible".format(mix_ratio)))
                 else:
                     grad_factor = 1.0
-                    impact_notes.append(("ok", "Mixing time increase manageable ({:.1f}x)".format(mix_ratio)))
+                    impact_notes.append(("ok", "Mixing time increase manageable ({:.1f}×)".format(mix_ratio)))
                 titer_factor *= grad_factor
             else:
                 grad_factor = 1.0
 
             if scaleup_strategy == "Constant P/V (power per volume)":
                 if abs(pv_ratio - 1.0) > 0.2:
-                    impact_notes.append(("warn", "P/V ratio at target is {:.2f}x — not constant P/V. Adjust RPM or impeller.".format(pv_ratio)))
+                    impact_notes.append(("warn", "P/V ratio at target is {:.2f}× — not constant P/V".format(pv_ratio)))
                 else:
-                    impact_notes.append(("ok", "P/V maintained ({:.2f}x)".format(pv_ratio)))
+                    impact_notes.append(("ok", "P/V maintained ({:.2f}×)".format(pv_ratio)))
             elif scaleup_strategy == "Constant tip speed":
                 diff_pct = abs(tip_large - tip_small) / max(tip_small, 1e-9)
                 if diff_pct > 0.15:
-                    impact_notes.append(("warn", "Tip speed changed {:.2f} -> {:.2f} m/s — not constant tip speed".format(tip_small, tip_large)))
+                    impact_notes.append(("warn", "Tip speed changed {:.2f} → {:.2f} m/s".format(tip_small, tip_large)))
                 else:
-                    impact_notes.append(("ok", "Tip speed maintained ({:.2f} -> {:.2f} m/s)".format(tip_small, tip_large)))
+                    impact_notes.append(("ok", "Tip speed maintained ({:.2f} → {:.2f} m/s)".format(tip_small, tip_large)))
 
             ph_loop_disp = ph_loop_vs_lab if ph_loop_vs_lab > 1e-9 else max(1.0, vol_ratio ** (1.0 / 3.0))
             dco2_disp = dco2_vs_lab if dco2_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.22)
             foam_disp = foam_stress_vs_lab if foam_stress_vs_lab > 1e-9 else max(1.0, vol_ratio ** 0.18)
 
-            # ── Predicted titer ───────────────────────────────────────────
             final_titer_small     = float(df_plot[target_col].iloc[-1])
             predicted_titer_large = final_titer_small * titer_factor
 
@@ -1262,18 +1628,17 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
             sf_time            = np.array([1.0 - (1.0 - titer_factor) * (float(t) / (day_max + 1e-9))**0.7 for t in hist_times])
             scaled_curve       = actual_curve * sf_time
 
-            # ── Display ───────────────────────────────────────────────────
-            st.markdown("---")
-            st.markdown("### Results")
+            st.markdown(section_divider(), unsafe_allow_html=True)
+            st.markdown(sub_header("📊", "Results"), unsafe_allow_html=True)
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Current Scale Titer",        "{:.2f} mg/L".format(final_titer_small))
             m2.metric("Predicted Large Scale Titer", "{:.2f} mg/L".format(predicted_titer_large),
                       delta="{:+.2f} mg/L".format(predicted_titer_large - final_titer_small))
             m3.metric("Overall Scale Factor",        "{:.1%}".format(titer_factor))
-            m4.metric("Volume Increase",             "{:.0f}x".format(vol_large / max(vol_small, 1e-9)))
+            m4.metric("Volume Increase",             "{:.0f}×".format(vol_large / max(vol_small, 1e-9)))
 
-            st.markdown("#### Engineering Parameters Comparison")
+            st.markdown(sub_header("⚙️", "Engineering Parameters"), unsafe_allow_html=True)
             eng_df = pd.DataFrame({
                 "Parameter":      ["Working Volume (L)", "Agitation (RPM)", "Tip Speed (m/s)",
                                    "kLa (1/h)", "P/V ratio (relative)", "Mixing time (relative)", "Gas flow (vvm)",
@@ -1288,40 +1653,28 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
             })
             st.dataframe(eng_df, use_container_width=True, hide_index=True)
 
-            st.markdown("#### Risk Assessment")
-            for sev, msg in impact_notes:
-                if sev == "warn":
-                    st.warning("⚠️ " + msg)
-                else:
-                    st.success("✅ " + msg)
+            st.markdown(sub_header("🚩", "Risk Assessment"), unsafe_allow_html=True)
+            st.markdown(render_flags_html(impact_notes), unsafe_allow_html=True)
 
-            st.markdown("#### Predicted Titer Trajectory")
-            fig_su, ax_su = plt.subplots(figsize=(12, 4))
-            ax_su.plot(hist_times, actual_curve, 'o-', color='steelblue', lw=2,
+            st.markdown(sub_header("📈", "Predicted Titer Trajectory"), unsafe_allow_html=True)
+            fig_su, ax_su = plt.subplots(figsize=(12, 4.5))
+            ax_su.plot(hist_times, actual_curve, 'o-', color=PLOT_COLORS[0], lw=2, markersize=5,
                        label="Current scale ({:.0f}L)".format(vol_small), zorder=3)
-            ax_su.plot(hist_times, scaled_curve, 's--', color='coral', lw=2,
+            ax_su.plot(hist_times, scaled_curve, 's--', color=PLOT_COLORS[2], lw=2, markersize=4,
                        label="Predicted at {:.0f}L".format(vol_large), alpha=0.85)
             ax_su.fill_between(hist_times, scaled_curve * 0.85, scaled_curve * 1.15,
-                               alpha=0.15, color='coral', label="+/-15% uncertainty band")
+                               alpha=0.1, color=PLOT_COLORS[2], label="±15% uncertainty band")
             ax_su.set_xlabel(time_col if time_col else "Day")
             ax_su.set_ylabel("{} (mg/L)".format(target_col))
-            ax_su.set_title("Titer: {:.0f}L -> {:.0f}L  |  Scale factor: {:.0%}".format(vol_small, vol_large, titer_factor))
+            ax_su.set_title("Titer: {:.0f}L → {:.0f}L  |  Scale factor: {:.0%}".format(vol_small, vol_large, titer_factor))
             ax_su.legend(fontsize=9)
-            ax_su.grid(True, alpha=0.3)
             plt.tight_layout()
             st.pyplot(fig_su, use_container_width=True)
             plt.close()
 
-            st.markdown("#### Risk Factor Breakdown")
-            risk_labels = [
-                "kLa / O2 transfer",
-                "Shear stress",
-                "Dissolved CO₂ / pCO₂",
-                "Nutrient gradients",
-                "pH control lag",
-                "Foam / antifoam",
-                "Temperature gradients",
-            ]
+            st.markdown(sub_header("⚠️", "Risk Factor Breakdown"), unsafe_allow_html=True)
+            risk_labels = ["kLa / O₂ transfer", "Shear stress", "Dissolved CO₂ / pCO₂",
+                           "Nutrient gradients", "pH control lag", "Foam / antifoam", "Temperature gradients"]
             risk_scores = [
                 max(0.0, 100.0 * (1.0 - kla_factor)),
                 max(0.0, 100.0 * (1.0 - shear_factor)),
@@ -1332,15 +1685,14 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 max(0.0, 100.0 * (1.0 - temp_factor)),
             ]
             fig_r, ax_r = plt.subplots(figsize=(8, 5))
-            bar_colors_r = ["#ef4444" if s > 15 else "#f97316" if s > 5 else "#22c55e" for s in risk_scores]
-            bars_r = ax_r.barh(risk_labels, risk_scores, color=bar_colors_r, height=0.5)
+            bar_colors_r = [_PALETTE["coral"] if s > 15 else _PALETTE["amber"] if s > 5 else _PALETTE["emerald"] for s in risk_scores]
+            bars_r = ax_r.barh(risk_labels, risk_scores, color=bar_colors_r, height=0.5, edgecolor='none')
             for bar, val in zip(bars_r, risk_scores):
                 ax_r.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
-                          "{:.1f}%".format(val), va='center', fontsize=9)
+                          "{:.1f}%".format(val), va='center', fontsize=9, color=_PALETTE["text_dim"])
             ax_r.set_xlabel("Estimated titer loss (%)")
             ax_r.set_title("Scale-Up Risk Factors")
             ax_r.set_xlim(0, max(risk_scores + [1]) * 1.4)
-            ax_r.grid(True, alpha=0.2, axis='x')
             plt.tight_layout()
             st.pyplot(fig_r, use_container_width=True)
             plt.close()
@@ -1353,21 +1705,20 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 "Current titer: {:.2f} mg/L. Predicted large-scale titer: {:.2f} mg/L (factor: {:.0%}). "
                 "Key risks: {}. Parameters maintained: {}. "
                 "kLa: {:.1f} -> {:.1f}/h. Tip speed: {:.2f} -> {:.2f} m/s. "
-                "Additional proxies (not first-principles): pH loop {:.2f}x lab, dCO2/pCO2 {:.2f}x lab, foam {:.2f}x lab, temp. factor {:.3f} (threshold {:.0f} L). "
-                "Write a 4-5 sentence plain-English scale-up assessment covering: "
-                "(1) overall outlook, (2) the single biggest risk, (3) one concrete recommendation to improve large-scale titer."
+                "Additional proxies: pH loop {:.2f}x lab, dCO2/pCO2 {:.2f}x lab, foam {:.2f}x lab, temp. factor {:.3f}. "
+                "Write a 4-5 sentence plain-English scale-up assessment."
             ).format(
                 vol_small, vol_large, scaleup_strategy,
                 final_titer_small, predicted_titer_large, titer_factor,
                 "; ".join(warn_risks) if warn_risks else "None",
                 "; ".join(ok_risks)   if ok_risks   else "None",
                 kla_small, kla_large_est, tip_small, tip_large,
-                ph_loop_disp, dco2_disp, foam_disp, temp_factor, temp_gradient_threshold_L,
+                ph_loop_disp, dco2_disp, foam_disp, temp_factor,
             )
             su_insight = ai_interpret(su_prompt)
             if su_insight:
-                st.markdown("#### AI Scale-Up Assessment")
-                st.info(su_insight)
+                st.markdown(sub_header("🤖", "AI Scale-Up Assessment"), unsafe_allow_html=True)
+                show_insight(su_insight, "📐")
 
             su_text = (
                 "SCALE-UP PREDICTION REPORT\n"
@@ -1379,11 +1730,6 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 "  kLa:         {:.1f} -> {:.1f} /h\n"
                 "  P/V ratio:   {:.3f}x\n"
                 "  Mixing time: {:.2f}x longer\n\n"
-                "ADDITIONAL SCALE PROXIES (approximate):\n"
-                "  pH loop vs lab:     {:.2f}x\n"
-                "  dCO2/pCO2 vs lab:   {:.2f}x\n"
-                "  Foam vs lab:        {:.2f}x\n"
-                "  Temp. grad. factor: {:.3f} (if vol >= {:.0f} L and enabled)\n\n"
                 "TITER PREDICTION:\n"
                 "  Current scale:  {:.2f} mg/L\n"
                 "  Predicted:      {:.2f} mg/L\n"
@@ -1394,34 +1740,25 @@ foam/antifoam, and temperature gradients (approximate, not first-principles) to 
                 datetime.now().strftime("%Y-%m-%d %H:%M"),
                 vol_small, vol_large, vol_large / max(vol_small, 1e-9),
                 scaleup_strategy,
-                tip_small, tip_large,
-                kla_small, kla_large_est,
-                pv_ratio,
-                mix_ratio,
-                ph_loop_disp, dco2_disp, foam_disp, temp_factor, temp_gradient_threshold_L,
+                tip_small, tip_large, kla_small, kla_large_est, pv_ratio, mix_ratio,
                 final_titer_small, predicted_titer_large, titer_factor,
                 "\n".join(["  [!] " + m if s == "warn" else "  [OK] " + m for s, m in impact_notes]),
                 su_insight if su_insight else "Not available"
             )
-            st.download_button(
-                "📄 Download Scale-Up Report",
-                data=su_text,
+            st.download_button("📄  Download Scale-Up Report", data=su_text,
                 file_name="scaleup_{:.0f}L_to_{:.0f}L_{}.txt".format(vol_small, vol_large, datetime.now().strftime("%Y%m%d")),
-                mime="text/plain",
-                use_container_width=True
-            )
-
+                mime="text/plain", use_container_width=True)
 
 
 # =============================================================================
-# TAB 4 — EARLY WARNING
+# TAB 5 — EARLY WARNING
 # =============================================================================
 with tab_earlywarning:
-    st.markdown("## ⚡ Early Warning System")
-    st.markdown("Upload early timepoint data from a new run to forecast its final titer against your historical average.")
+    st.markdown(sub_header("⚡", "Early Warning System"), unsafe_allow_html=True)
+    st.caption("Upload early timepoint data from a new run to forecast its final titer against your historical average.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first.")
+        st.info("Run the **Main Analysis** first.")
     else:
         rf           = st.session_state.rf
         target_col   = st.session_state.target_col
@@ -1442,7 +1779,7 @@ with tab_earlywarning:
                     sh2 = st.selectbox("Select sheet", xl2.sheet_names, key="ew_sheet")
                     df_new = load_excel(nb, sh2)
 
-                st.success(f"Loaded {len(df_new)} early timepoint rows")
+                st.success(f"✓ Loaded **{len(df_new)}** early timepoint rows")
                 st.dataframe(df_new.head(), use_container_width=True)
 
                 X_new = pd.DataFrame()
@@ -1475,14 +1812,15 @@ with tab_earlywarning:
                 col2.metric("Historical Mean",         f"{hist_mean:.2f}")
                 col3.metric("Z-score vs Historical",   f"{z:.2f}")
 
-                fig_ew, ax_ew = plt.subplots(figsize=(10, 4))
-                ax_ew.plot(day_col_vals, preds_new, 'o-', color='steelblue', label='Forecast')
-                ax_ew.axhline(hist_mean, color='gray', ls='--', lw=1.5, label=f'Historical mean ({hist_mean:.2f})')
+                fig_ew, ax_ew = plt.subplots(figsize=(10, 4.5))
+                ax_ew.plot(day_col_vals, preds_new, 'o-', color=PLOT_COLORS[0], label='Forecast', markersize=5, lw=1.8)
+                ax_ew.axhline(hist_mean, color=_PALETTE["text_dim"], ls='--', lw=1.5, label=f'Historical mean ({hist_mean:.2f})')
                 if hist_std > 0:
-                    ax_ew.axhspan(hist_mean-hist_std, hist_mean+hist_std, alpha=0.15, color='gray', label='Historical +/-1 std')
-                ax_ew.set_xlabel(time_col); ax_ew.set_ylabel(f'Predicted {target_col}')
+                    ax_ew.axhspan(hist_mean-hist_std, hist_mean+hist_std, alpha=0.08, color=_PALETTE["text_dim"], label='Historical ±1 std')
+                ax_ew.set_xlabel(time_col)
+                ax_ew.set_ylabel(f'Predicted {target_col}')
                 ax_ew.set_title('Early Warning: Forecasted Titer Trajectory')
-                ax_ew.legend(fontsize=9); ax_ew.grid(True, alpha=0.3)
+                ax_ew.legend(fontsize=9)
                 plt.tight_layout()
                 st.pyplot(fig_ew, use_container_width=True)
                 plt.close()
@@ -1490,26 +1828,29 @@ with tab_earlywarning:
                 ew_insight = ai_interpret(f"""You are a bioprocess scientist reviewing an early run forecast.
 Early data covers {len(df_new)} samples. Forecasted final titer: {final_forecast:.2f}.
 Historical mean: {hist_mean:.2f}, std: {hist_std:.2f}, z-score: {z:.2f}.
-In 2-3 sentences, give a plain-English early warning assessment. Should the scientist intervene? What specifically should they check?""")
+In 2-3 sentences, give a plain-English early warning assessment. Should the scientist intervene?""")
                 show_insight(ew_insight, "⚡")
 
             except Exception as e:
                 st.error(f"Error: {e}")
         else:
             st.markdown("""
-**How to use:** Run the Main Analysis on completed historical runs first, then upload just the first few days of a new run here. The model will forecast whether the run is on track.
-            """)
+<div style="text-align:center; padding: 2rem 1rem; color: var(--text-dim);">
+    <div style="font-size: 2rem; margin-bottom: .4rem;">📤</div>
+    <div style="font-size: .9rem;">Run the Main Analysis on historical runs first, then upload just the first few days of a new run here.<br/>The model will forecast whether the run is on track.</div>
+</div>
+            """, unsafe_allow_html=True)
 
 
 # =============================================================================
-# TAB 5 — CELL LINE COMPARISON
+# TAB 6 — CELL LINE COMPARISON
 # =============================================================================
 with tab_cellline:
-    st.markdown("## 🔬 Cell Line Comparison")
-    st.markdown("Benchmarks all runs or cell lines in your dataset against each other.")
+    st.markdown(sub_header("🔬", "Cell Line Comparison"), unsafe_allow_html=True)
+    st.caption("Benchmarks all runs or cell lines in your dataset against each other.")
 
     if st.session_state.rf is None:
-        st.info("Run the Main Analysis first.")
+        st.info("Run the **Main Analysis** first.")
     else:
         df_plot      = st.session_state.df_plot
         target_col   = st.session_state.target_col
@@ -1535,38 +1876,41 @@ with tab_cellline:
                     "Mean Titer":      round(float(gdf[target_col].mean()), 2),
                 }
                 if len(gact) > 1:
-                    row["R2"] = round(r2_score(gact, gpred), 3)
+                    row["R²"] = round(r2_score(gact, gpred), 3)
                 summary_rows.append(row)
 
             summary_df = pd.DataFrame(summary_rows).sort_values("Peak Titer", ascending=False)
             st.dataframe(summary_df, use_container_width=True)
 
             fig_cl, axes = plt.subplots(1, 3, figsize=(14, 5))
-            colors = plt.cm.tab10.colors
             for ax, metric in zip(axes, ["Final Titer","Peak Titer","Mean Titer"]):
                 vals = summary_df[metric].values
                 labs = summary_df["Run / Cell Line"].values
-                bars = ax.bar(labs, vals, color=[colors[i%10] for i in range(len(labs))])
+                bar_cols = [PLOT_COLORS[i % len(PLOT_COLORS)] for i in range(len(labs))]
+                bars = ax.bar(labs, vals, color=bar_cols, edgecolor='none')
                 for bar, val in zip(bars, vals):
                     ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+max(vals)*0.01,
-                            f'{val:.1f}', ha='center', fontsize=8)
-                ax.set_title(metric); ax.set_ylabel(target_col)
-                ax.tick_params(axis='x', rotation=45); ax.grid(True, alpha=0.2, axis='y')
-            plt.suptitle("Cell Line / Run Comparison", fontsize=14, y=1.02)
+                            f'{val:.1f}', ha='center', fontsize=8, color=_PALETTE["text_dim"])
+                ax.set_title(metric)
+                ax.set_ylabel(target_col)
+                ax.tick_params(axis='x', rotation=45)
+            plt.suptitle("Cell Line / Run Comparison", fontsize=14, y=1.02, color=_PALETTE["text"])
             plt.tight_layout()
             st.pyplot(fig_cl, use_container_width=True)
             plt.close()
 
             # Metabolic fingerprint
-            st.subheader("Metabolic Fingerprint")
+            st.markdown(sub_header("🧬", "Metabolic Fingerprint"), unsafe_allow_html=True)
             numeric_feats = [c for c in feature_cols if c in df_plot.select_dtypes(include=np.number).columns]
             if len(numeric_feats) >= 3:
                 means_df = df_plot.groupby(group_col)[numeric_feats].mean()
                 norm_df  = (means_df - means_df.min()) / (means_df.max() - means_df.min() + 1e-9)
                 fig_fp, ax_fp = plt.subplots(figsize=(12, 5))
-                sns.heatmap(norm_df.T, annot=True, fmt=".2f", cmap="YlOrRd",
-                            ax=ax_fp, linewidths=0.5, annot_kws={"size":8},
-                            cbar_kws={"label":"Normalised mean (0-1)"})
+                cmap_fp = sns.color_palette("YlOrRd", as_cmap=True)
+                sns.heatmap(norm_df.T, annot=True, fmt=".2f", cmap=cmap_fp,
+                            ax=ax_fp, linewidths=0.3, linecolor=_PALETTE["border"],
+                            annot_kws={"size": 8, "color": _PALETTE["text"]},
+                            cbar_kws={"label": "Normalised mean (0–1)"})
                 ax_fp.set_title("Metabolic Fingerprint by Run (normalised)")
                 plt.tight_layout()
                 st.pyplot(fig_fp, use_container_width=True)
