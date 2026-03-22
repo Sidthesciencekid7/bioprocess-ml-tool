@@ -441,10 +441,11 @@ def make_excel(df, target_col, time_col, rf, xgb, feature_cols, y, rf_pred, xgb_
 # =============================================================================
 # TABS
 # =============================================================================
-tab_main, tab_harvest, tab_feedopt, tab_earlywarning, tab_cellline = st.tabs([
+tab_main, tab_harvest, tab_feedopt, tab_scaleup, tab_earlywarning, tab_cellline = st.tabs([
     "📊 Main Analysis",
     "🌾 Harvest Timing",
     "🧪 Feed Optimizer",
+    "📐 Scale-Up Predictor",
     "⚡ Early Warning",
     "🔬 Cell Line Comparison"
 ])
